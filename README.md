@@ -1,7 +1,3 @@
-Here's the entire documentation rewritten comprehensively and line-by-line into clear Markdown format, suitable for inclusion in your `README.md` file:
-
----
-
 # CONNECT Iterative Data Analysis and Visualization Toolkit – User Guide
 
 ---
@@ -61,7 +57,13 @@ If missing, install [TeX Live](https://www.tug.org/texlive/) or another LaTeX di
 
 ## Running the Program
 
-Run the program via the command-line interface, specifying at least the `--project_path` argument. You may also set an output directory using `--output_path`. By default, outputs are saved in a subfolder named `iteration_analysis` within the project folder.
+Run the program with the help flag to see all available options and how to use it:
+
+```bash
+python plot_iterations.py --help
+```
+
+The program is run via the command-line interface, specifying at least the `--project_path` argument. You may also set an output directory using `--output_path`. By default, outputs are saved in a subfolder named `iteration_analysis` within the project folder.
 
 ### Minimal Command Example
 

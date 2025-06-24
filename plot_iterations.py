@@ -314,13 +314,13 @@ Outputs
 After processing, the program will generate several types of output files, saved under the output directory:
   
   - **Univariate Analysis Reports:**  
-    Histograms, box plots, and summary tables (CSV, LaTeX, Markdown) appear in an `analysis_reports` subfolder.
+    Histograms, box plots, and summary tables (CSV, LaTeX, Markdown) appear in an `likelihood_analysis` subfolder.
   
   - **Iteration Plots:**  
     Detailed two-panel scatter plots are saved in an `iteration_plots` subfolder.
   
   - **Triangle Plots:**  
-    Pairplots (corner plots) are saved in a `triangle_plots` subfolder.
+    Pairplots (corner plots) are saved in a `pairplots` subfolder.
   
 Each output file is saved in one or more formats as specified (e.g., PNG, PDF).
 
@@ -643,7 +643,7 @@ plot_iter_args:
           'contour_linewidths' (float):
               Line width for the contour overlay lines (default: 0.5).
           'plot_threshold_line' (bool):
-              Whether to plot the threshold line (default: True).
+              Whether to plot the threshold line (default: False).
           'delta_chi2_threshold_color' (str):
               Color of the threshold line (default: 'purple').
           'delta_chi2_threshold_linewidth' (float):
@@ -802,7 +802,10 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 from matplotlib.lines import Line2D
 import matplotlib.lines as mlines
 from matplotlib.legend_handler import HandlerBase
-
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch
+from matplotlib.font_manager import FontProperties
+from matplotlib.transforms import Bbox
 
 # Seaborn Imports (Grouped)
 import seaborn as sns
@@ -871,9 +874,9 @@ class Main:
                     see the help text below or read the docstring of the script.   
             
                 If run with default settings it will output:  
-                - Univariate analysis reports in the 'analysis_reports' subfolder. This includes histograms, box plots, etc.  
+                - Univariate analysis reports in the 'likelihood_analysis' subfolder. This includes histograms, box plots, etc.  
                 - Iteration plots in the 'iteration_plots' subfolder. This includes detailed two-panel scatter plots.  
-                - Triangle plots in the 'triangle_plots' subfolder. This includes pairplots (corner plots) of parameters.   
+                - Triangle plots in the 'pairplots' subfolder. This includes pairplots (corner plots) of parameters.   
             
         
                 Note: Since argparse cannot directly accept Python objects (lists, dictionaries, booleans, etc.),  
@@ -960,6 +963,21 @@ class Main:
                 'Example: --run_triangle_plot "True"'
             ),
         )
+
+        parser.add_argument(
+            "--run_grid_plot",
+            type=self.parse_python_literal,
+            default="True",
+            required=False,
+            help=(
+                "**OPTIONAL**: Boolean flag to run the grid plot (GridPlot).\n"
+                "It is the same as the triangle plot, but only plots selected parameter pairs (rows and columns specified).\n"
+                "If True, the script will generate a grid plot of the final iteration's\n"
+                "accepted vs. discarded points for selected (or all) parameters.\n"
+                'Example: --run_grid_plot "True"'
+            ),
+        )
+
         parser.add_argument(
             "--run_plot_iterations",
             type=self.parse_python_literal,
@@ -986,6 +1004,20 @@ class Main:
                 "Example: --triangle_plot_cosmoparams \"['H0', 'omega_b', 'tau_reio', 'omega_cdm']\""
             ),
         )
+
+        parser.add_argument(
+            "--grid_plot_cosmoparams",
+            type=self.parse_python_literal,
+            required=False,
+            help=(
+                "**RECOMMENDED**: A dictionary specifying the parameters to plot in the grid plot.\n"
+                "The dictionary should have the following structure:\n"
+                "   {'rows': ['param1', 'param2'], 'columns': ['param3', 'param4']}\n"
+                "   Default: {'rows': ['H0', 'omega_b'], 'columns': ['H0', 'omega_b', 'omega_cdm', 'YHe']}\n"
+                "   Example: --grid_plot_cosmoparams \"{'rows': ['H0', 'omega_b'], 'columns': ['tau_reio', 'omega_cdm']}\""
+            ),
+        )
+
         parser.add_argument(
             "--plot_iter_cosmoparams",
             type=self.parse_python_literal,
@@ -1076,30 +1108,39 @@ class Main:
                 "       Example: [('H0', 'omega_b'), ('H0', 'tau_reio')].\n"
                 "       (The same as 'plot_iter_cosmoparams'. You can use either)\n"
                 "   'iterations_to_plot' (list or 'all'): Specific iterations to plot (default: 'all').\n"
-                "   'max_subplots' (int): Maximum number of subplot columns (default: 10); extra iterations are grouped.\n"
+                "   'max_subplots' (int): Maximum number of subplot columns (default: 5); extra iterations are grouped.\n"
+                "   'fig_width' (str): Figure width in format 'width unit' (default: '440 pts').\n"
+                "       possible units: 'pts', 'cm', 'in'. i.e. '440 pts', '10 cm', '5 in'.\n"
                 "   'save_formats' (list): Output file formats (e.g., ['png', 'pdf']).\n"
-                "   'iteration0_figure_inset' (bool): Insert an inset for iteration 0 data in the first column (default: True).\n"
+                "   'iteration0_figure_inset' (bool): Insert an inset for iteration 0 data in the first column (default: False).\n"
                 "   'show_super_legend' (bool): Display a super legend (default: True).\n\n"
                 "**Axis & Data Filtering Options**:\n"
                 "   'x_range' (list): Override the shared x-axis range, e.g., [0, 10].\n"
                 "   'y_range' (list): Override the shared y-axis range, e.g., [0, 10].\n"
                 "       (If omitted, ranges are calculated automatically.)\n"
+                "   'log_x' (bool): Use logarithmic scale for x-axis (default: False).\n"
+                "   'log_y' (bool): Use logarithmic scale for y-axis (default: False).\n"
                 "   'ignore_iteration_0_for_axis' (bool): Exclude iteration 0 when computing axis ranges (default: True).\n"
                 "   'include_lkldiscard_new_for_axis_range' (bool): Include 'discarded_likelihood_new' for axis range calculation (default: True).\n"
                 "   'include_discard_iter0_remnants_for_axis_range' (bool): Include remnants from iteration 0 (default: False).\n"
                 "   'combine_iteration_0_and_1' (bool): Combine iterations 0 and 1 into one subplot (default: False).\n"
+                "   'exclude_iter0_discard_clutter_lower_panels' (bool): Exclude clutter from discards originating from iteration 0 'accepted' in lower panels (default: True).\n"
                 "   'data_types_to_plot' (dict): Specify which data types to include (use keys 'upper_panel' and 'lower_panel').\n"
                 "       (See full docstring guide for a list of valid keys and defaults.)\n\n"
-                "**Marker & Color Styling Options**:\n"
+                "**Marker & Color & Legend Styling Options**:\n"
                 "   'colormap' (str): Colormap for iteration colors (default: 'tab10').\n"
                 "   'marker_size' (int): Size of markers (default: 8).\n"
                 "   'marker_edge_width' (float): Marker edge width (default: 0.1).\n"
                 "   'alpha_accepted' (float): Opacity for accepted points (default: 1).\n"
                 "   'alpha_discarded' (float): Opacity for discarded points (default: 1).\n"
                 "   'legend_labels' (dict): Custom legend labels (default labels are used if not provided).\n"
-                "   'marker_styles' (dict): Custom marker styles for each data type (see docstring guide for required keys).\n\n"
+                "   'marker_styles' (dict): Custom marker styles for each data type (see docstring guide for required keys).\n"
+                "   'show_counts_in_legend' (bool): Show sample counts in the subplot-legend for each data type (default: True).\n"
+                "   'use_bold_subplot_legend' (bool): Use bold font for subplot legends (readable on top of points) (default: 'auto').\n"
+                "   'subplot_legend_location' (str): Location of subplot legend (default: 'upper left').\n"
+                "   'tall_subplots' (bool): Make each panel taller (non-square) to fit subplot-legends without covering data. (default: True).\n\n"
                 "**Contour Options** (only if 'plot_contours' is True):\n"
-                "   'plot_contours' (bool): Display Δχ² contours (default: True).\n"
+                "   'plot_contours' (bool): Display Δχ² contours (default: False).\n"
                 "   'cmap_contour' (str): Colormap for contours (default: 'viridis').\n"
                 "   'sigma' (int): Gaussian smoothing sigma for contours (default: 12).\n"
                 "   'grid_size' (int): Grid resolution for contour interpolation (default: 1000).\n"
@@ -1112,7 +1153,7 @@ class Main:
                 "   'contour_line_overlay' (bool): Overlay contour lines (default: False).\n"
                 "   'alpha_contour' (float): Opacity for contour lines (default: 0.8).\n"
                 "   'contour_linewidths' (float): Line width for contour lines (default: 0.4).\n"
-                "   'plot_threshold_line' (bool): Plot the threshold line (default: True).\n"
+                "   'plot_threshold_line' (bool): Plot the threshold line (default: False).\n"
                 "   'delta_chi2_threshold_color' (str): Color of the threshold line (default: 'purple').\n"
                 "   'delta_chi2_threshold_linewidth' (float): Line width of the threshold line (default: 2).\n\n"
                 "**Downsampling & Saving Options**:\n"
@@ -1132,22 +1173,34 @@ class Main:
             default={},
             required=False,
             help=(
-                "**OPTIONAL** : A dictionary of arguments to pass to the TrianglePlot class for customizing the pairplot.\n\n"
+                "**OPTIONAL** : A dictionary of arguments to pass to the TrianglePlot class for customizing the triangle pairplot and grid pairplot.\n\n"
                 "General Plot Options:\n"
                 "  'iterations_to_plot' (list or 'all'): Iteration numbers to include in the plot (eg. [0,1,2]. default: 'all').\n"
                 "  'params_triangleplot' (list or 'all'): Parameter names to include in the triangle plot (default: 'all').\n"
                 "       Example: ['H0', 'omega_b', 'omega_cdm'].\n"
                 "       This parameter is the same as the 'triangle_plot_cosmoparams' argument. So you can use either one.\n"
+                "   'grid_vars' (dict): Dictionary specifying grid parameters for the grid plot.\n"
+                "       Example: {'rows': ['H0', 'omega_b'], 'columns': ['tau_reio', 'omega_cdm']}\n"
+                "       (This is the same as 'grid_plot_cosmoparams'. You can use either)\n"
                 "  'colormap' (str): Name of the colormap for iteration colors in the scatter plot (default: 'tab10').\n\n"
                 "Axis & Data Filtering Options:\n"
+                "  'only_accepted' (bool): Whether to only plot accepted points (default: False).\n"
                 "  'ignore_iteration_0_for_axis' (bool): Whether to exclude iteration 0 when computing axis limits (default: False).\n"
                 "  'include_lkldiscard_new_for_axis_range' (bool): Include 'discarded_likelihood_new' points\n when determining axis ranges (default: True).\n"
                 "  'data_types_to_plot' (dict): Specify which data types to include in the triangle plot.\n"
                 "      Example:\n"
                 "      { 'accepted_new': True, 'discarded_likelihood_new': True, 'discarded_likelihood_old': True, \n"
                 "        'discarded_iteration': True }\n"
-                "       See full docstring guide for descriptions of the data types.\n\n"
+                "       See full docstring guide for descriptions of the data types.\n"
+                "  'custom_axis_ranges' (dict): Override axis ranges for specified parameters in the triangle plot.\n"
+                "       Example: {'H0': (60, 80), 'omega_b': (0.02, 0.05)}\n"
+                "  'custom_ticks' (dict): Custom ticks for specified parameters in the triangle plot.\n"
+                "       Example: {'H0': [60, 70, 80], 'omega_b': [0.02, 0.04]}\n"
+                "  'log_scale_params' (list): List of parameters to apply logarithmic scaling to.\n"
+                "       Example: ['H0', 'omega_b']\n\n"
                 "Marker & Styling Options:\n"
+                "  'preferred_legend_position' (str): Preferred position for the legend (default: 'upper right').\n"
+                "       Choices: 'upper right' (right top corner if space allows), 'above' (above triangle plot, but centered),\n"
                 "  'marker_size' (int): Marker size for scatter points in the pairplot (default: 2).\n"
                 "  'marker_alpha' (float): Marker transparency (default: 1).\n"
                 "  'marker_edge_lw' (float): Marker edge linewidth (default: 0.1).\n\n"
@@ -1162,7 +1215,7 @@ class Main:
                 "  'contour_line_overlay' (bool): Whether to overlay contour lines (default: False).\n"
                 "  'alpha_contour' (float): Alpha transparency for contour lines (default: 0.8).\n"
                 "  'contour_linewidths' (float): Line width for contour lines (default: 0.4).\n"
-                "   'plot_threshold_line' (bool): Whether to plot the threshold line (default: True).\n"
+                "   'plot_threshold_line' (bool): Whether to plot the threshold line (default: False).\n"
                 "   'delta_chi2_threshold_color' (str): Color of the threshold line (default: 'purple').\n"
                 "   'delta_chi2_threshold_linewidth' (float): Line width of the threshold line (default: 2).\n\n"
                 "Downsampling & Saving Options:\n"
@@ -1253,9 +1306,9 @@ class Main:
 
         # Default LaTeX labels for parameters
         self.default_latex_labels = {
-            "omega_cdm": r"$\Omega_{\mathrm{cdm}}$",
+            "omega_cdm": r"$\omega_{\mathrm{cdm}}$",
             "H0": r"$\mathrm{H}_{0}$",
-            "omega_b": r"$\Omega_{\mathrm{b}}$",
+            "omega_b": r"$\omega_{\mathrm{b}}$",
             "tau_reio": r"$\tau_{\mathrm{reio}}$",
             "n_s": r"$n_{\mathrm{s}}$",
             "ln10^{10}A_s": r"$\ln(10^{10}A_{\mathrm{s}})$",
@@ -1265,6 +1318,9 @@ class Main:
             "A_s": r"$A_{\mathrm{s}}$",
             "sigma8": r"$\sigma_{8}$",
             "100*theta_s": r"$100\theta_{\mathrm{s}}$",
+            "100theta_s": r"$100\theta_{\mathrm{s}}$",
+            "omega_ini_dcdm": r"$\omega_{\mathrm{ini,cdm}}$",
+            "Gamma_dcdm": r"$\Gamma_{\mathrm{dcdm}}$",
         }
 
         # Update LaTeX labels with any user-provided overrides
@@ -1307,6 +1363,7 @@ class Main:
             data = dataloader_instance.run()
         except Exception as e:
             print(f"Error loading training data: {e}")
+            print(traceback.format_exc())
 
         if self.verbose >= 1:
             print(
@@ -1456,13 +1513,13 @@ class Main:
                         marker_styles=self.args.plot_iter_args.get(
                             "marker_styles", None
                         ),
-                        max_subplots=self.args.plot_iter_args.get("max_subplots", 10),
+                        max_subplots=self.args.plot_iter_args.get("max_subplots", 5),
                         save_formats=self.args.plot_iter_args.get(
                             "save_formats", ["pdf"]
                         ),
-                        marker_size=self.args.plot_iter_args.get("marker_size", 8),
+                        marker_size=self.args.plot_iter_args.get("marker_size", 3),
                         marker_edge_width=self.args.plot_iter_args.get(
-                            "marker_edge_width", 0.1
+                            "marker_edge_width", 0.03
                         ),
                         combine_iteration_0_and_1=self.args.plot_iter_args.get(
                             "combine_iteration_0_and_1", False
@@ -1487,7 +1544,7 @@ class Main:
                             "iterations_to_plot", "all"
                         ),
                         draw_contours=self.args.plot_iter_args.get(
-                            "plot_contours", True
+                            "plot_contours", False
                         ),
                         contour_levels=self.args.plot_iter_args.get(
                             "contour_levels", 21
@@ -1526,7 +1583,7 @@ class Main:
                             "interpolation_method", "cubic"
                         ),
                         iteration0_figure_insert=self.args.plot_iter_args.get(
-                            "iteration0_figure_inset", True
+                            "iteration0_figure_inset", False
                         ),
                         include_lkldiscard_new_for_axis_range=self.args.plot_iter_args.get(
                             "include_lkldiscard_new_for_axis_range", True
@@ -1543,7 +1600,7 @@ class Main:
                         ),
                         pickle_contour_data=pickle_data_plot_iter,
                         plot_threshold_line=self.args.plot_iter_args.get(
-                            "plot_threshold_line", True
+                            "plot_threshold_line", False
                         ),
                         delta_chi2_threshold_color=self.args.plot_iter_args.get(
                             "delta_chi2_threshold_color", "purple"
@@ -1551,6 +1608,24 @@ class Main:
                         delta_chi2_threshold_linewidth=self.args.plot_iter_args.get(
                             "delta_chi2_threshold_linewidth", 2
                         ),
+                        log_x=self.args.plot_iter_args.get("log_x", False),
+                        log_y=self.args.plot_iter_args.get("log_y", False),
+                        exclude_iter0_discard_clutter_lower_panels=self.args.plot_iter_args.get(
+                            "exclude_iter0_discard_clutter_lower_panels", True
+                        ),
+                        use_bold_subplot_legend=self.args.plot_iter_args.get(
+                            "use_bold_subplot_legend", "auto"
+                        ),
+                        show_counts_in_legend=self.args.plot_iter_args.get(
+                            "show_counts_in_legend", True
+                        ),
+                        subplot_legend_location=self.args.plot_iter_args.get(
+                            "subplot_legend_location", "upper left"
+                        ),
+                        tall_subplots=self.args.plot_iter_args.get(
+                            "tall_subplots", True
+                        ),
+                        fig_width=self.args.plot_iter_args.get("fig_width", "440 pts"),
                     )
                     plotter_instance.plot()
                 except Exception as e:
@@ -1565,14 +1640,14 @@ class Main:
 
         if self.verbose >= 1 and self.args.run_plot_iterations:
             print(
-                "\033[1m-----------------------------PLOTTED ITERATIONS SUCCESSFULLY -----------------------------\033[0m\n"
+                "\033[1m-----------------------------FINISHED PLOTTING ITERATIONS -----------------------------\033[0m\n"
             )
 
         # Plot Triangle Plot
-        if self.args.run_triangle_plot:
+        if self.args.run_triangle_plot or self.args.run_grid_plot:
             if self.verbose >= 1:
                 print(
-                    "\033[1m-----------------------------PLOTTING TRIANGLE PLOT -----------------------------\033[0m\n"
+                    "\033[1m-----------------------------PLOTTING TRIANGLE/GRID PLOT -----------------------------\033[0m\n"
                 )
 
             pickle_data_triangle_plot = None
@@ -1606,6 +1681,17 @@ class Main:
             else:
                 params_triangleplot = "all"
 
+            if self.args.grid_plot_cosmoparams is not None:
+                grid_vars = self.args.grid_plot_cosmoparams
+            elif self.args.triangleplot_args.get("grid_vars", None) is not None:
+                grid_vars = self.args.triangleplot_args.get("grid_vars", None)
+            else:
+                # Default grid_vars
+                grid_vars = {
+                    "rows": ["H0", "omega_b"],
+                    "columns": ["H0", "omega_b", "omega_cdm", "YHe"],
+                }
+
             try:
                 triangle_plotter_instance = TrianglePlot(
                     data=data,
@@ -1614,6 +1700,7 @@ class Main:
                         "iterations_to_plot", "all"
                     ),
                     params_triangleplot=params_triangleplot,
+                    grid_vars=grid_vars,
                     verbose=self.verbose,
                     param_labels=self.latex_labels,
                     ignore_iteration_0_for_axis=self.args.triangleplot_args.get(
@@ -1628,13 +1715,16 @@ class Main:
                     downsampling_fraction=self.args.triangleplot_args.get(
                         "downsampling_fraction", 0
                     ),
+                    preferred_legend_position=self.args.triangleplot_args.get(
+                        "preferred_legend_position", "upper right"
+                    ),
                     colormap=self.args.triangleplot_args.get("colormap", "tab10"),
                     save_params_loglkls=self.args.triangleplot_args.get(
                         "save_params_loglkls", False
                     ),
                     pickle_contour_data=pickle_data_triangle_plot,
                     plot_contours=self.args.triangleplot_args.get(
-                        "plot_contours", True
+                        "plot_contours", False
                     ),
                     grid_size=self.args.triangleplot_args.get("grid_size", 1000),
                     sigma=self.args.triangleplot_args.get("sigma", 12),
@@ -1665,7 +1755,7 @@ class Main:
                     ),
                     param_connect=self.param_connect,
                     plot_threshold_line=self.args.triangleplot_args.get(
-                        "plot_threshold_line", True
+                        "plot_threshold_line", False
                     ),
                     delta_chi2_threshold_color=self.args.triangleplot_args.get(
                         "delta_chi2_threshold_color", "purple"
@@ -1676,23 +1766,61 @@ class Main:
                     save_formats=self.args.triangleplot_args.get(
                         "save_formats", ["pdf"]
                     ),
+                    custom_axis_ranges=self.args.triangleplot_args.get(
+                        "custom_axis_ranges", None
+                    ),
+                    log_scale_params=self.args.triangleplot_args.get(
+                        "log_scale_params", None
+                    ),
+                    custom_ticks=self.args.triangleplot_args.get("custom_ticks", None),
                 )
 
-                triangle_plotter_instance.plot(
-                    diag_kind="kde", corner=True, include_discarded=True
-                )
+                if self.args.run_triangle_plot:
+                    if self.verbose >= 1:
+                        print(
+                            "\033[1m-----------------------------PLOTTING TRIANGLE PLOT -----------------------------\033[0m\n"
+                        )
+                    triangle_plotter_instance.plot(
+                        diag_kind="kde",
+                        corner=True,
+                        include_discarded=not self.args.triangleplot_args.get(
+                            "only_accepted", False
+                        ),
+                    )
+                    if self.verbose >= 1:
+                        print(
+                            "\033[1m-----------------------------FINISHED PLOTTING TRIANGLE PLOT-----------------------------\033[0m"
+                        )
+
+                if self.args.run_grid_plot:
+                    if self.verbose >= 1:
+                        print(
+                            "\033[1m-----------------------------PLOTTING GRID PLOT-----------------------------\033[0m"
+                        )
+                    triangle_plotter_instance.plot_matrix(
+                        diag_kind="kde",
+                        corner=False,
+                        include_discarded=not self.args.triangleplot_args.get(
+                            "only_accepted", False
+                        ),
+                    )
+                    if self.verbose >= 1:
+                        print(
+                            "\033[1m-----------------------------FINISHED PLOTTING GRID PLOT-----------------------------\033[0m"
+                        )
             except Exception as e:
-                print(f"Error plotting triangle plot: {e}")
+                print(f"Error plotting triangle plot or grid plot: {e}")
                 traceback.print_exc()
 
-        else:
+        elif not self.args.run_triangle_plot:
             print(f"run_triangle_plot set to False. Skipping triangle plot.\n")
             print(
                 "\033[1m-----------------------------SKIPPING TRIANGLE PLOT -----------------------------\033[0m\n"
             )
-        if self.verbose >= 1 and self.args.run_triangle_plot:
+        elif not self.args.run_grid_plot:
+            print(f"run_grid_plot set to False. Skipping grid plot.\n")
             print(
-                "\033[1m-----------------------------PLOTTED TRIANGLE PLOT SUCCESSFULLY -----------------------------\033[0m"
+                "\033[1m-----------------------------SKIPPING GRID PLOT -----------------------------\033[0m\n"
             )
 
     def parse_python_literal(self, arg):
@@ -2541,38 +2669,6 @@ class Dataloader:
                 print(f"[run] Loading best-fit point for iteration {iteration_number}.")
             best_fit = None
             best_fit = self.load_best_fit(iteration_path, verbose=self.verbose)
-
-            # if iteration_number == 0 or iteration_number == 1:
-            #     if (
-            #         not (
-            #             self.param_connect.keep_initial_data
-            #             or self.param_connect.keep_first_iteration
-            #         )
-            #         and self.param_connect.use_likelihood_filter
-            #     ):
-            #         # The likelihood-filter didn't set in until iteration 2, so if we want to analyze delta_chi2 for the initial sampling and iteration 1, we need to set the best-fit point manually.
-            #         # Find the lowest -log-likelihood value in the accumulated data for iteration 0 and 1
-            #         if current_accumulated["likelihood"] is not None:
-            #             best_fit = {
-            #                 # Load row from current_combined matching the index of the minimum loglkl value from the accumulated likelihood data
-            #                 # But make sure it is a pandas dataframe with columns matching the current_combined dataframe columns
-            #                 "parameters": current_combined.loc[
-            #                     [
-            #                         current_accumulated["likelihood"][
-            #                             "true_loglkl"
-            #                         ].idxmin()
-            #                     ]
-            #                 ],
-            #                 "likelihood": pd.DataFrame(
-            #                     {
-            #                         "loglkl": [
-            #                             current_accumulated["likelihood"][
-            #                                 "true_loglkl"
-            #                             ].min()
-            #                         ]
-            #                     }
-            #                 ),
-            #             }
 
             if self.verbose >= 2:
                 print(
@@ -3491,15 +3587,15 @@ class Dataloader:
     def load_model_chain_data(self, iteration, verbose=1):
         # More or less identical to import_points_from_chains() from montepython.py
 
-        paramnames = self.param_connect.parameters.keys()
+        paramnames = list(self.param_connect.parameters.keys())
         paramnames_custom = []
         try:
-            paramnames_custom = self.param.custom_parameters.keys()
+            paramnames_custom = list(self.param_connect.custom_parameters.keys())
         except:
             # Not implemented
             pass
         if len(paramnames_custom) > 0:
-            paramnames = paramnames_custom
+            paramnames = paramnames + paramnames_custom
 
         paramnames = ["100theta_s" if s == "100*theta_s" else s for s in paramnames]
         model_param_scales = []
@@ -3578,6 +3674,8 @@ class Dataloader:
                     )
                     i += 1
 
+        data = np.array(data, dtype=np.float32)
+
         if len(paramnames_custom) > 0:
             try:
                 # Load transform_custom_parameters from tools.py in CONNECT_path/source/tools.py
@@ -3637,29 +3735,87 @@ class Dataloader:
                 if chain_model_df is None or model_df is None:
                     raise ValueError("chain_model_df and model_df must not be None.")
 
-                # **2. Combine Accepted and Discarded Samples into kept_df**
+                # **2. Combine Accepted and Discarded Samples into data_iteration**
                 # If model_lkl_discarded_df is None, only model_df is used
-                kept_df = (
+                data_iteration = (
                     pd.concat([model_df, model_lkl_discarded_df], ignore_index=True)
                     if model_lkl_discarded_df is not None
                     else model_df.copy()
                 )
 
-                if kept_df.empty:
+                if data_iteration.empty:
                     if verbose >= 2:
                         print(
-                            "[find_failed_class_points] kept_df is empty. All chain samples are considered failed."
+                            "[find_failed_class_points] data_iteration is empty. All chain samples are considered failed."
                         )
                     return chain_model_df.copy()
 
-                # **3. Perform Exact Matching Using Merge with Indicator**
-                # Drop duplicates to ensure accurate matching
-                merged = chain_model_df.merge(kept_df, how="left", indicator=True)
+                if (
+                    hasattr(self.param_connect, "custom_parameters")
+                    and len(list(self.param_connect.custom_parameters)) > 0
+                ):
+                    # mapped_to = custom_parameters[param_name]["maps_to"]
+                    mapped_to_names = []
+                    for param_name in self.param_connect.custom_parameters:
+                        mapped_to_names += [
+                            self.param_connect.custom_parameters[param_name]["maps_to"]
+                        ]
 
-                # **4. Identify Failed Samples**
-                failed_class_df = merged[merged["_merge"] == "left_only"].drop(
-                    columns=["_merge"]
-                )
+                    # Copy columns from data_iteration that are mapped_to_names into a new DataFrame
+                    # data_iteration_mappedto = data_iteration[mapped_to_names].copy()
+                    # drop the mapped_to_names columns from data_iteration
+                    data_iteration.drop(columns=mapped_to_names, inplace=True)
+
+                    # Copy columns from chain_model_df that are mapped_to_names into a new DataFrame
+                    chain_model_df_mappedto = chain_model_df[mapped_to_names].copy()
+                    # drop the mapped_to_names columns from chain_model_df
+                    chain_model_df.drop(columns=mapped_to_names, inplace=True)
+
+                    # Perform the comparison
+                    failed_class_df, failed_class_df_mappedto = self.compare_dataframes(
+                        df1=chain_model_df,
+                        df2=data_iteration,
+                        df_likelihood=chain_model_df_mappedto,
+                        df_likelihood2=None,
+                        comparison_type="new",
+                        compare_context={
+                            "context": "find_failed_class_points",
+                            "df1": "chain_model_df",
+                            "df2": "all accepted and discarded samples",
+                            "msg1": "No chain samples were provided.",
+                            "msg2": "No accepted or discarded samples were provided.",
+                        },
+                    )
+
+                    # Combine the failed_class_df and failed_class_df_mappedto
+                    failed_class_df = pd.concat(
+                        [failed_class_df, failed_class_df_mappedto], axis=1
+                    )
+                else:
+
+                    failed_class_df, _ = self.compare_dataframes(
+                        df1=chain_model_df,
+                        df2=data_iteration,
+                        df_likelihood=None,
+                        df_likelihood2=None,
+                        comparison_type="new",
+                        compare_context={
+                            "context": "find_failed_class_points",
+                            "df1": "chain_model_df",
+                            "df2": "all accepted and discarded samples",
+                            "msg1": "No chain samples were provided.",
+                            "msg2": "No accepted or discarded samples were provided.",
+                        },
+                    )
+
+                # # **3. Perform Exact Matching Using Merge with Indicator**
+                # # Drop duplicates to ensure accurate matching
+                # merged = chain_model_df.merge(data_iteration, how="left", indicator=True)
+
+                # # **4. Identify Failed Samples**
+                # failed_class_df = merged[merged["_merge"] == "left_only"].drop(
+                #     columns=["_merge"]
+                # )
 
                 if verbose >= 2:
                     print(
@@ -3794,10 +3950,7 @@ class Dataloader:
                     # Check if folder is complete
                     if os.path.exists(
                         os.path.join(self.project_path, folder, "model_params.txt")
-                    ) and os.path.exists(
-                        os.path.join(self.project_path, folder, "derived.txt")
                     ):
-
                         iterations[folder] = 0  # Initial sampling is iteration 0
                         break
 
@@ -3809,8 +3962,6 @@ class Dataloader:
             for i, folder in enumerate(numeric_folders, start=1):
                 if os.path.exists(
                     os.path.join(self.project_path, folder, "model_params.txt")
-                ) and os.path.exists(
-                    os.path.join(self.project_path, folder, "derived.txt")
                 ):
                     iterations[folder] = i
 
@@ -4506,7 +4657,7 @@ class Analyze_likelihoods:
         self.create_these_outputs = create_these_outputs
 
         # Create a directory to store analysis reports
-        self.analysis_dir = os.path.join(self.output_path, "analysis_reports")
+        self.analysis_dir = os.path.join(self.output_path, "likelihood_analysis")
         os.makedirs(self.analysis_dir, exist_ok=True)
 
         # Default categories if user doesn't supply them
@@ -4759,6 +4910,7 @@ class Analyze_likelihoods:
 
         # Gather iteration-wise data (loglkl and Δχ²)
         iteration_data = self._gather_iteration_data()
+        iteration_data_chain = self._gather_iteration_data_chain()
 
         # Check if create_these_outputs is set to 'all' or if the 'summary' key is True in create_these_outputs
         if (
@@ -4786,11 +4938,17 @@ class Analyze_likelihoods:
             for stat_type in ["count"]:  # , 'density']: not supported anymore
 
                 self._plot_per_iteration_hist(
-                    iteration_data, metric="delta_chi_sq", stat=stat_type
+                    iteration_data,
+                    iteration_data_chain=iteration_data_chain,
+                    metric="delta_chi_sq",
+                    stat=stat_type,
                 )
 
                 self._plot_per_iteration_hist(
-                    iteration_data, metric="loglkl", stat=stat_type
+                    iteration_data,
+                    iteration_data_chain=iteration_data_chain,
+                    metric="loglkl",
+                    stat=stat_type,
                 )
 
         matplotlib.use("Agg")
@@ -4803,7 +4961,7 @@ class Analyze_likelihoods:
 
         if self.verbose >= 1:
             print(
-                "[run_analysis] Likelihood analysis complete. Check 'analysis_reports' directory for outputs."
+                "[run_analysis] Likelihood analysis complete. Check 'likelihood_analysis' directory for outputs."
             )
 
     def _check_likelihood_availability(self):
@@ -4885,13 +5043,21 @@ class Analyze_likelihoods:
 
                 # Add bestfit manually if keep_initial_data or keep_first_iteration is set to None with likelihood filter,
                 # so that the delta_chi_sq can be calculated and plotted even for iterations where the entire batch is discarded.
-                if iteration == 0 or iteration == 1:
+                # if iteration == 0 or iteration == 1:
+                #     if not (
+                #         getattr(self.param_connect, "keep_initial_data", False)
+                #         or getattr(self.param_connect, "keep_first_iteration", False)
+                #     ) and getattr(self.param_connect, "use_likelihood_filter", False):
+
+                if getattr(self.param_connect, "use_likelihood_filter", False):
                     if (
-                        not (
-                            self.param_connect.keep_initial_data
-                            or self.param_connect.keep_first_iteration
+                        iteration == 0
+                        and not getattr(self.param_connect, "keep_initial_data", False)
+                    ) or (
+                        iteration == 1
+                        and not getattr(
+                            self.param_connect, "keep_first_iteration", False
                         )
-                        and self.param_connect.use_likelihood_filter
                     ):
                         # Calculate the minimum loglkl from the discarded_iteration
                         discarded_iteration_df = content.get(
@@ -5058,6 +5224,218 @@ class Analyze_likelihoods:
 
         return iteration_data
 
+    # ------------------------------------------------------------------
+    #  NEW  – collect likelihoods that live in the "chain_loglkl" column
+    # ------------------------------------------------------------------
+    def _gather_iteration_data_chain(self, anchor_on_true_bestfit=True):
+        """
+        Build a per-iteration container identical in shape to the one
+        returned by `_gather_iteration_data`, but using `chain_loglkl`
+        instead of `true_loglkl`.
+
+        Parameters
+        ----------
+        anchor_on_true_bestfit : bool, default=True
+            If True  -> use the chain-likelihood value evaluated at the
+                        *true* best-fit point in that iteration as the
+                        reference for Δχ².
+            If False -> use the minimum chain_loglkl **seen so far**
+                        (across all categories in all iterations processed
+                        up to the current one).
+
+        Returns
+        -------
+        iteration_data_chain : dict
+            Same layout as the original method, but all arrays are built
+            from `chain_loglkl` and keys are `delta_chi_sq_*` (chain).
+        """
+
+        last_completed_it = self._find_last_complete_iteration()
+
+        # ---------- 1) bookkeeping containers (mirrors original) ----------
+        self.count_points_chain = {}  # <<< NEW
+        for iteration in self.data["iteration_data"]:
+            self.count_points_chain[iteration] = {}
+            for cat in self.data_categories:
+                for key in (cat, f"delta_chi_sq_{cat}"):
+                    self.count_points_chain[iteration][key] = {
+                        "original": 0,
+                        "display": None,
+                    }
+            # cumulative bucket
+            for key in (
+                "cumulative_discarded_likelihood",
+                "delta_chi_sq_cumulative_discarded_likelihood",
+            ):
+                self.count_points_chain[iteration][key] = {
+                    "original": 0,
+                    "display": None,
+                }
+
+        iteration_data = {}
+        non_empty_categories = {cat: False for cat in self.data_categories}
+        cumulative_discarded_lkl = np.array([], dtype=np.float32)
+
+        # global running best (only used if anchor_on_true_bestfit=False)
+        running_min_chain = np.inf  # <<< NEW
+
+        # ---------- 2) iterate over iterations ----------
+        for it, content in sorted(self.data["iteration_data"].items()):
+
+            if it > last_completed_it:
+                continue
+
+            # ---------- 2a) choose best-fit reference ----------
+            if anchor_on_true_bestfit:
+                # Find the row with the *minimum true_loglkl* first
+                acc_df = content.get("accepted_accumulated", {}).get(
+                    "likelihood_data", None
+                )
+                if acc_df is not None and not acc_df.empty:
+                    idx = acc_df["true_loglkl"].idxmin()
+                    best_fit_chain = acc_df.loc[idx, "chain_loglkl"]
+                else:
+                    best_fit_chain = None
+                    if getattr(self.param_connect, "use_likelihood_filter", False):
+                        if (
+                            it == 0
+                            and not getattr(
+                                self.param_connect, "keep_initial_data", False
+                            )
+                        ) or (
+                            it == 1
+                            and not getattr(
+                                self.param_connect, "keep_first_iteration", False
+                            )
+                        ):
+
+                            # fall-back for iterations 0/1 when everything may be discarded
+                            disc_df = content.get("discarded_iteration", {}).get(
+                                "likelihood_data", None
+                            )
+                            if disc_df is not None and not disc_df.empty:
+                                idx = disc_df["true_loglkl"].idxmin()
+                                best_fit_chain = disc_df.loc[idx, "chain_loglkl"]
+                            else:
+                                best_fit_chain = None
+            else:
+                # absolute minimum of chain_loglkl across *all* samples seen so far
+                best_fit_chain = None  # not implemented yet                                            # <<< NEW
+            iteration_data[it] = {"best_fit_loglkl": best_fit_chain}  # <<< MOD
+
+            # ---------- 2b) loop over categories ----------
+            for cat in self.data_categories:
+                lkl_df = content.get(cat, {}).get("likelihood_data", None)
+
+                if lkl_df is not None and not lkl_df.empty and "chain_loglkl" in lkl_df:
+                    arr = lkl_df["chain_loglkl"].values.astype(np.float32)
+
+                    # running global min for option 2
+                    if not anchor_on_true_bestfit:
+                        running_min_chain = min(running_min_chain, arr.min())
+                        iteration_data[it][
+                            "best_fit_loglkl"
+                        ] = running_min_chain  # <<< NEW
+
+                    # normal display / clipping logic (identical to original)
+                    self.count_points_chain[it][cat]["original"] = len(arr)
+                    if self.max_loglkl_in_display is not None:
+                        arr = arr[arr <= self.max_loglkl_in_display]
+                        self.count_points_chain[it][cat]["display"] = len(arr)
+                    if self.x_range is not None:
+                        self.count_points_chain[it][cat]["display"] = len(
+                            arr[(arr >= self.x_range[0]) & (arr <= self.x_range[1])]
+                        )
+                    non_empty_categories[cat] = True
+                else:
+                    arr = np.array([], dtype=np.float32)
+
+                iteration_data[it][cat] = arr
+
+                # ---------- 2c) Δχ² with chain reference ----------
+                delta_key = f"delta_chi_sq_{cat}"
+                ref = iteration_data[it]["best_fit_loglkl"]
+                if ref is not None and len(arr) > 0:
+                    delta = 2.0 * (arr - ref)
+                    self.count_points_chain[it][delta_key]["original"] = len(delta)
+                    if self.max_delta_chi2_in_display is not None:
+                        delta = delta[delta <= self.max_delta_chi2_in_display]
+                        self.count_points_chain[it][delta_key]["display"] = len(delta)
+                    if self.x_range is not None:
+                        self.count_points_chain[it][delta_key]["display"] = len(
+                            delta[
+                                (delta >= self.x_range[0]) & (delta <= self.x_range[1])
+                            ]
+                        )
+                    iteration_data[it][delta_key] = delta
+                else:
+                    iteration_data[it][delta_key] = np.array([], dtype=np.float32)
+
+            # ---------- 2d) cumulative discarded ----------
+            disc_new = iteration_data[it].get(
+                "discarded_likelihood_new", np.array([], dtype=np.float32)
+            )
+            disc_old = iteration_data[it].get(
+                "discarded_likelihood_old", np.array([], dtype=np.float32)
+            )
+            current_disc = np.concatenate([disc_new, disc_old])
+            cumulative_discarded_lkl = np.concatenate(
+                [cumulative_discarded_lkl, current_disc]
+            )
+
+            iteration_data[it][
+                "cumulative_discarded_likelihood"
+            ] = cumulative_discarded_lkl.copy()
+            self.count_points_chain[it]["cumulative_discarded_likelihood"][
+                "original"
+            ] = len(cumulative_discarded_lkl)
+
+            if self.max_loglkl_in_display is not None:
+                cumulative_discarded_lkl = cumulative_discarded_lkl[
+                    cumulative_discarded_lkl <= self.max_loglkl_in_display
+                ]
+                self.count_points_chain[it]["cumulative_discarded_likelihood"][
+                    "display"
+                ] = len(cumulative_discarded_lkl)
+            if self.x_range is not None:
+                self.count_points_chain[it]["cumulative_discarded_likelihood"][
+                    "display"
+                ] = len(
+                    cumulative_discarded_lkl[
+                        (cumulative_discarded_lkl >= self.x_range[0])
+                        & (cumulative_discarded_lkl <= self.x_range[1])
+                    ]
+                )
+
+            if len(cumulative_discarded_lkl) > 0:
+                non_empty_categories["cumulative_discarded_likelihood"] = True
+            # Δχ² for cumulative discarded
+            delta_key = "delta_chi_sq_cumulative_discarded_likelihood"
+            ref = iteration_data[it]["best_fit_loglkl"]
+            if ref is not None and len(cumulative_discarded_lkl) > 0:
+                delta_cum = 2.0 * (cumulative_discarded_lkl - ref)
+                self.count_points_chain[it][delta_key]["original"] = len(delta_cum)
+                if self.max_delta_chi2_in_display is not None:
+                    delta_cum = delta_cum[delta_cum <= self.max_delta_chi2_in_display]
+                    self.count_points_chain[it][delta_key]["display"] = len(delta_cum)
+                iteration_data[it][delta_key] = delta_cum
+
+                if self.x_range is not None:
+                    self.count_points_chain[it][delta_key]["display"] = len(
+                        delta_cum[
+                            (delta_cum >= self.x_range[0])
+                            & (delta_cum <= self.x_range[1])
+                        ]
+                    )
+            else:
+                iteration_data[it][delta_key] = np.array([], dtype=np.float32)
+
+        # drop empty categories (mirrors original)
+        self.data_categories_chain = [
+            c for c, non_empty in non_empty_categories.items() if non_empty
+        ]  # <<< NEW
+        return iteration_data
+
     def _plot_per_iteration_boxplot(self, iteration_data, metric="delta_chi_sq"):
         """
         Plot distributions per iteration (boxplot + stripplot) for each data category in self.data_categories.
@@ -5073,33 +5451,40 @@ class Analyze_likelihoods:
 
         matplotlib.use("Agg")
 
-        # Determine plot label & threshold logic
-        if metric == "delta_chi_sq":
-            y_label = r"$\Delta\chi^2$"
-            global_threshold_value = getattr(
-                self.param_connect, "delta_chi2_threshold", None
-            )
-
-            threshold_line_label = (
-                f"$\Delta\chi^2{{\mathrm{{-Threshold}}}} = {global_threshold_value:.1f}$"
-                if global_threshold_value < 10000
-                else (
-                    r"$\Delta\chi^2\mathrm{{-Threshold}}="
-                    + self.sci_notation_latex(global_threshold_value)
-                    + "$"
-                )
-            )
-
-        elif metric == "loglkl":
-            y_label = r"$-\log(\mathcal{L})$"
-            threshold_line_label = r"\mathrm{{Best-Fit:}}\; -\log(\mathcal{{L}})"
-            global_threshold_value = None  # We'll get best-fit loglkl per iteration
-        else:
-            raise ValueError("Invalid metric. Use 'delta_chi_sq' or 'loglkl'.")
-
         # Construct a DataFrame for plotting
         plot_rows = []
         for iteration, i_data in iteration_data.items():
+
+            # Determine plot label & threshold logic
+            if metric == "delta_chi_sq":
+                y_label = r"$\Delta\chi^2$"
+                global_threshold_value = getattr(
+                    self.param_connect, "delta_chi2_threshold", None
+                )
+                # Check if global_threshold_value is a list
+                if isinstance(global_threshold_value, list):
+                    if iteration < len(global_threshold_value):
+                        global_threshold_value = global_threshold_value[iteration]
+                    else:
+                        global_threshold_value = global_threshold_value[-1]
+
+                threshold_line_label = (
+                    f"$\Delta\chi^2{{\mathrm{{-Threshold}}}} = {global_threshold_value:.1f}$"
+                    if global_threshold_value < 10000
+                    else (
+                        r"$\Delta\chi^2\mathrm{{-Threshold}}="
+                        + self.sci_notation_latex(global_threshold_value)
+                        + "$"
+                    )
+                )
+
+            elif metric == "loglkl":
+                y_label = r"$-\log(\mathcal{L})$"
+                threshold_line_label = r"\mathrm{{Best-Fit:}}\; -\log(\mathcal{{L}})"
+                global_threshold_value = None  # We'll get best-fit loglkl per iteration
+            else:
+                raise ValueError("Invalid metric. Use 'delta_chi_sq' or 'loglkl'.")
+
             best_fit_loglkl = i_data.get("best_fit_loglkl", None)
             for cat in self.data_categories:
                 if metric == "delta_chi_sq":
@@ -5301,7 +5686,7 @@ class Analyze_likelihoods:
                 f"[_plot_per_iteration_boxplot] Saved {metric} boxplots to {plot_path}"
             )
 
-    def _plot_per_iteration_hist(
+    def _plot_per_iteration_hist_original(
         self, iteration_data, metric="delta_chi_sq", stat="count"
     ):
         """
@@ -5438,7 +5823,6 @@ class Analyze_likelihoods:
             or (i == len(used_axes_indices) - 1 and len(used_axes_indices) % cols != 0)
         ]
 
-        delta_threshold = getattr(self.param_connect, "delta_chi2_threshold", None)
         all_handles_labels = {}
         all_handles_labels_inset = {}
         first_inset_ax = None  # Initialize
@@ -5455,6 +5839,13 @@ class Analyze_likelihoods:
         # Now fill each subplot
         for i, entry in enumerate(plot_data):
             iteration = entry["iteration"]
+            delta_threshold = getattr(self.param_connect, "delta_chi2_threshold", None)
+            if isinstance(delta_threshold, list):
+                if iteration < len(delta_threshold):
+                    delta_threshold = delta_threshold[iteration]
+                else:
+                    delta_threshold = delta_threshold[-1]
+
             best_fit = entry["best_fit_loglkl"]
             main_arrays = entry["main_arrays"]
             inset_arrays = entry["inset_arrays"]
@@ -5695,24 +6086,24 @@ class Analyze_likelihoods:
                 if self.y_range_inset is not None:
                     ax_inset.set_ylim(self.y_range_inset)
 
-                if iteration > lowest_iteration_inset:
-                    # Create legend for the subplot using all_legends_info_inset
-                    legend_labels = []
-                    legend_handles = []
-                    for label in all_legends_info_inset[iteration].keys():
-                        legend_labels.append(
-                            all_legends_info_inset[iteration][label]["label"]
-                        )
-                        legend_handles.append(
-                            all_legends_info_inset[iteration][label]["handle"]
-                        )
-                    legend_inset = ax_inset.legend(
-                        legend_handles,
-                        legend_labels,
-                        loc="upper left",
-                        fontsize=6,
-                        frameon=True,
+                # if iteration > lowest_iteration_inset:
+                # Create legend for the subplot using all_legends_info_inset
+                legend_labels = []
+                legend_handles = []
+                for label in all_legends_info_inset[iteration].keys():
+                    legend_labels.append(
+                        all_legends_info_inset[iteration][label]["label"]
                     )
+                    legend_handles.append(
+                        all_legends_info_inset[iteration][label]["handle"]
+                    )
+                legend_inset = ax_inset.legend(
+                    legend_handles,
+                    legend_labels,
+                    loc="upper left",
+                    fontsize=6,
+                    frameon=True,
+                )
 
             # --- End of plotting inset ---
 
@@ -5894,6 +6285,1068 @@ class Analyze_likelihoods:
             print(
                 f"[_plot_per_iteration_hist] Saved histograms ({metric}, {stat}) to {save_path}"
             )
+
+    # ================================================================
+    #  _plot_per_iteration_hist  (fully backward-compatible)
+    # ================================================================
+    def _plot_per_iteration_hist(
+        self,
+        iteration_data,
+        iteration_data_chain=None,  # <<< NEW (optional)
+        metric="delta_chi_sq",
+        stat="count",
+    ):
+        """
+        Produce per-iteration histograms.
+
+        • With only `iteration_data` ➜ identical figure as before.
+        • With BOTH containers      ➜ each iteration-cell is split in two
+        stacked panels: upper = CHAIN (“fake”), lower = CLASS (“true”).
+        """
+
+        matplotlib.rcParams.update(matplotlib.rcParamsDefault)
+        if self.verbose >= 2:
+            extra = " +CHAIN" if iteration_data_chain is not None else ""
+            print(f"[_plot_per_iteration_hist] stat={stat}, metric={metric}{extra}")
+
+        matplotlib.use("Agg")
+
+        # ------------------------------------------------------------------
+        # 0)  GLOBAL BIN EDGES  (build a dummy-DF from *both* containers)
+        # ------------------------------------------------------------------
+        dummy_df = self._create_dummy_df(  # <<< MOD (extra arg)
+            iteration_data,
+            iteration_data_chain,  # <<< NEW
+            metric=metric,
+        )
+        if dummy_df is None:
+            if self.verbose >= 2:
+                print("[_plot_per_iteration_hist] Nothing to plot.")
+            return
+
+        global_bin_edges = self.compute_global_bin_edges_seaborn_internal(
+            data=dummy_df,
+            x="value",
+            hue="category_iteration",
+            stat="count",
+            bins="auto",
+            log_scale=(True, False),
+            palette=sns.color_palette("tab20", n_colors=80),
+            alpha=1,
+            fill=True,
+            element="bars",
+            common_norm=True,
+            common_bins=True,
+            multiple="layer",
+        )
+
+        # ------------------------------------------------------------------
+        # 1)  GATHER DATA FOR EACH ITERATION
+        # ------------------------------------------------------------------
+        plot_data = []
+        # A shared one‐element list to hold the *first* inset‐axes we create:
+        first_inset_ax_container = [None]
+
+        # Shared flags so we only add the Δχ²‐threshold (or Best‐Fit) line _once_
+        threshold_label_added_container = [False]
+        threshold_label_added_inset_container = [False]
+
+        for iteration, i_data_true in iteration_data.items():
+
+            # --- CLASS / TRUE ---
+            best_fit_true = i_data_true.get("best_fit_loglkl", None)
+            main_true, inset_true = [], []
+            # Loop over hist_main_panel
+
+            for item in self.hist_main_panel:
+                cat = item["category"]
+                arr = (
+                    i_data_true.get(
+                        f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
+                    )
+                    if metric == "delta_chi_sq"
+                    else i_data_true.get(cat, np.array([], dtype=np.float32))
+                )
+                if len(arr) > 0:
+                    main_true.append((cat, arr, item))
+            if self.include_inset:
+                for item in self.hist_inset:
+                    cat = item["category"]
+                    arr = (
+                        i_data_true.get(
+                            f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
+                        )
+                        if metric == "delta_chi_sq"
+                        else i_data_true.get(cat, np.array([], dtype=np.float32))
+                    )
+                    if len(arr) > 0:
+                        inset_true.append((cat, arr, item))
+
+            # --- CHAIN / FAKE (optional) --------------------------------
+            main_fake, inset_fake = [], []  # <<< NEW
+            best_fit_fake = None  # <<< NEW
+            if iteration_data_chain is not None and iteration in iteration_data_chain:
+                i_data_fake = iteration_data_chain[iteration]
+                best_fit_fake = i_data_fake.get("best_fit_loglkl", None)
+
+                for item in self.hist_main_panel:
+                    cat = item["category"]
+                    arr = (
+                        i_data_fake.get(
+                            f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
+                        )
+                        if metric == "delta_chi_sq"
+                        else i_data_fake.get(cat, np.array([], dtype=np.float32))
+                    )
+                    if len(arr) > 0:
+                        main_fake.append((cat, arr, item))
+                if self.include_inset:
+                    for item in self.hist_inset:
+                        cat = item["category"]
+                        arr = (
+                            i_data_fake.get(
+                                f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
+                            )
+                            if metric == "delta_chi_sq"
+                            else i_data_fake.get(cat, np.array([], dtype=np.float32))
+                        )
+                        if len(arr) > 0:
+                            inset_fake.append((cat, arr, item))
+
+            # --- skip empty iterations completely -----------------------
+            if not main_true and not inset_true and not main_fake and not inset_fake:
+                continue
+
+            plot_data.append(
+                dict(
+                    iteration=iteration,
+                    # CLASS
+                    best_fit_loglkl=best_fit_true,
+                    main_arrays=main_true,
+                    inset_arrays=inset_true,
+                    # CHAIN
+                    best_fit_loglkl_fake=best_fit_fake,  # <<< NEW
+                    main_arrays_fake=main_fake,  # <<< NEW
+                    inset_arrays_fake=inset_fake,  # <<< NEW
+                )
+            )
+
+        if not plot_data:
+            if self.verbose >= 2:
+                print("[_plot_per_iteration_hist] No data to plot for histograms.")
+            return
+
+        # ------------------------------------------------------------------
+        # 2)  GLOBAL INSET RANGES  (true + fake combined)
+        # ------------------------------------------------------------------
+        all_inset_plots = []
+        if self.include_inset:
+            for entry in plot_data:
+                all_inset_plots += [(arr, cfg) for _, arr, cfg in entry["inset_arrays"]]
+                all_inset_plots += [  # <<< NEW
+                    (arr, cfg) for _, arr, cfg in entry["inset_arrays_fake"]
+                ]
+        x_min_in, x_max_in, y_min_in, y_max_in = (None, None, None, None)
+        if self.include_inset and all_inset_plots:
+            x_min_in, x_max_in, y_min_in, y_max_in = self._compute_global_inset_ranges(
+                all_inset_plots, metric=metric, stat=stat, bins=global_bin_edges
+            )
+
+        # ------------------------------------------------------------------
+        # 3)  CREATE THE OUTER GRID (same as before)
+        # ------------------------------------------------------------------
+        cols = max(3, int(round(math.sqrt(len(plot_data)))))
+        rows = int(math.ceil(len(plot_data) / cols))
+        fig, axes = plt.subplots(
+            rows, cols, figsize=(6 * cols, 3 * rows), sharex=True, sharey=True
+        )
+        axes = axes.T.flatten() if rows * cols > 1 else [axes]
+
+        first_true_ax, first_fake_ax = None, None  # <<< NEW
+        master_ax = None  # <- one axis that everybody will share
+        panel_axes = []
+        main_axes = []
+
+        # bookkeeping dictionaries (identical names)
+
+        # Identify the bottom row and rightmost column axes based on actual number of plots
+        used_axes_indices = list(range(len(plot_data)))
+
+        # Bottom row: the last 'cols' or fewer axes
+        bottom_row_indices = used_axes_indices[-cols:]
+
+        # Rightmost column: every axis where (index + 1) % cols == 0
+        rightmost_col_indices = [
+            i
+            for i in used_axes_indices
+            if (i + 1) % cols == 0
+            or (i == len(used_axes_indices) - 1 and len(used_axes_indices) % cols != 0)
+        ]
+
+        all_handles_labels = {}
+        all_handles_labels_inset = {}
+        first_inset_ax = None
+        all_legends_info_main = {}
+        all_legends_info_inset = {}
+        # threshold_label_added = False
+        # threshold_label_added_inset = False
+
+        lowest_iteration = min(e["iteration"] for e in plot_data)
+        if self.include_inset:
+            try:
+                lowest_iteration_inset = min(
+                    e["iteration"]
+                    for e in plot_data
+                    if e["inset_arrays"] or e["inset_arrays_fake"]
+                )
+            except ValueError:  # ← no inset arrays at all
+                self.include_inset = False
+                lowest_iteration_inset = None
+        else:
+            lowest_iteration_inset = None
+
+        # ------------------------------------------------------------------
+        # 4)  FILL EACH OUTER CELL  (one GridSpec per iteration)
+        # ------------------------------------------------------------------
+        from matplotlib.gridspec import GridSpecFromSubplotSpec
+
+        for axis_index, (ax_cell, entry) in enumerate(zip(axes, plot_data)):
+            iteration = entry["iteration"]
+
+            # ----------------------------------------------------------------
+            # 4A)  Build a nested 2×1 GridSpec if we have CHAIN data
+            # ----------------------------------------------------------------
+            gs_inner = GridSpecFromSubplotSpec(
+                2 if iteration_data_chain is not None else 1,
+                1,
+                height_ratios=[1, 1] if iteration_data_chain is not None else [1],
+                hspace=0,
+                subplot_spec=ax_cell.get_subplotspec(),
+            )
+            ax_cell.set_axis_off()  # outer axis just a holder
+
+            # helper to create / fetch a real axis object
+            def _get_inner(r):
+                if iteration_data_chain is None and r == 0:
+                    return ax_cell
+                ax = plt.Subplot(fig, gs_inner[r])
+                fig.add_subplot(ax)
+                return ax
+
+            # ---------- (i) CHAIN / fake – upper panel (if any) ----------
+            if iteration_data_chain is not None:
+                ax_fake = _get_inner(0)
+                # share axis with very first fake panel so Δχ² line lines up
+                if master_ax is None:
+                    master_ax = ax_fake
+                else:
+                    ax_fake.sharex(master_ax)
+                    ax_fake.sharey(master_ax)
+
+            if metric == "delta_chi_sq":
+                # if any of the CHAIN delta_chi_sq arrays go negative, switch to symlog
+                # if any(arr.min() < 0 for _, arr, _ in entry["main_arrays_fake"]):
+                ax_fake.set_xscale("symlog", linthresh=1e-2)
+                ax_true.set_xscale("symlog", linthresh=1e-2)
+
+                self._plot_one_panel(  # <<< NEW (wrapper)
+                    ax=ax_fake,
+                    iteration=iteration,
+                    lowest_iteration=lowest_iteration,
+                    lowest_iteration_inset=lowest_iteration_inset,
+                    metric=metric,
+                    stat=stat,
+                    global_bin_edges=global_bin_edges,
+                    x_min_inset=x_min_in,
+                    x_max_inset=x_max_in,
+                    y_min_inset=y_min_in,
+                    y_max_inset=y_max_in,
+                    main_arrays=entry["main_arrays_fake"],
+                    inset_arrays=entry["inset_arrays_fake"],
+                    best_fit_loglkl=entry["best_fit_loglkl_fake"],
+                    is_fake=True,
+                    # legend book-keeping dicts
+                    all_handles_labels=all_handles_labels,
+                    all_handles_labels_inset=all_handles_labels_inset,
+                    all_legends_info_main=all_legends_info_main,
+                    all_legends_info_inset=all_legends_info_inset,
+                    first_inset_ax_container=first_inset_ax_container,
+                    threshold_label_added_container=threshold_label_added_container,
+                    threshold_label_added_inset_container=threshold_label_added_inset_container,
+                )
+                # first_inset_ax_fake = first_inset_ax_fake or ax_fake  # update link
+                panel_axes.append((ax_fake, axis_index, True))  # True  → is_fake
+
+            # ---------- (ii) CLASS / true – lower (or only) panel --------
+            ax_true = _get_inner(1 if iteration_data_chain is not None else 0)
+
+            if master_ax is None:
+                master_ax = ax_true  # could happen if first CHAIN was empty
+            else:
+                ax_true.sharex(master_ax)
+                ax_true.sharey(master_ax)
+
+            self._plot_one_panel(  # <<< NEW
+                ax=ax_true,
+                iteration=iteration,
+                lowest_iteration=lowest_iteration,
+                lowest_iteration_inset=lowest_iteration_inset,
+                metric=metric,
+                stat=stat,
+                global_bin_edges=global_bin_edges,
+                x_min_inset=x_min_in,
+                x_max_inset=x_max_in,
+                y_min_inset=y_min_in,
+                y_max_inset=y_max_in,
+                main_arrays=entry["main_arrays"],
+                inset_arrays=entry["inset_arrays"],
+                best_fit_loglkl=entry["best_fit_loglkl"],
+                is_fake=False,
+                # legend book-keeping dicts
+                all_handles_labels=all_handles_labels,
+                all_handles_labels_inset=all_handles_labels_inset,
+                all_legends_info_main=all_legends_info_main,
+                all_legends_info_inset=all_legends_info_inset,
+                first_inset_ax_container=first_inset_ax_container,
+                threshold_label_added_container=threshold_label_added_container,
+                threshold_label_added_inset_container=threshold_label_added_inset_container,
+            )
+            # first_inset_ax_true = first_inset_ax_true or first_inset_ax_container[0]
+            panel_axes.append((ax_true, axis_index, False))  # False → CLASS
+
+            main_axes.append(ax_true)
+
+            # --------------------------------------------------------------
+            #  after both panels exist → decide whether to show x-tick labels
+            # --------------------------------------------------------------
+            # if axis_index in bottom_row_indices and axis_index in rightmost_col_indices:
+            #     ax_true.tick_params(axis="x", which="both", labelbottom=True)
+            #     if iteration_data_chain is not None:
+            #         ax_fake.tick_params(axis="x", which="both", labelbottom=True)
+
+            def last_outer_row_idx(col, n_cells, n_cols):
+                """
+                highest outer-cell index that belongs to this column
+                (works even when the grid is ragged)
+                """
+                last = n_cells - 1
+                while last % n_cols != col:
+                    last -= 1
+                return last
+
+            # ------------- X / Y tick visibility -----------------------------
+            col = axis_index % cols
+            last_idx = last_outer_row_idx(col, len(plot_data), cols)
+
+            # y-labels only on first column
+            ax_true.tick_params(labelleft=(col == 0))
+            if iteration_data_chain is not None:
+                ax_fake.tick_params(labelleft=(col == 0))
+
+            # x-labels on the CLASS panel of the last row in *this* column
+            if axis_index == last_idx:
+                ax_true.tick_params(axis="x", which="both", labelbottom=True)
+            else:
+                ax_true.tick_params(axis="x", which="both", labelbottom=False)
+
+            # the CHAIN panel never shows x-labels
+            if iteration_data_chain is not None:
+                ax_fake.tick_params(axis="x", which="both", labelbottom=False)
+
+            # if iteration_data_chain is not None:
+            #     ax_fake.text(
+            #         0.02,
+            #         0.96,
+            #         "CHAIN",
+            #         transform=ax_fake.transAxes,
+            #         fontsize=7,
+            #         fontweight="bold",
+            #         va="top",
+            #     )
+
+            # ax_true.text(
+            #     0.02,
+            #     0.96,
+            #     "CLASS",
+            #     transform=ax_true.transAxes,
+            #     fontsize=7,
+            #     fontweight="bold",
+            #     va="top",
+            # )
+
+            # row_y = np.linspace(0.5 + 1 / rows, 0.5 / rows, rows)  # centre of each row
+            # for k, y in enumerate(row_y):
+            #     fig.text(
+            #         0.995,
+            #         y,
+            #         "CHAIN" if k % 2 == 0 else "CLASS",
+            #         ha="right",
+            #         va="center",
+            #         fontsize=8,
+            #         fontweight="bold",
+            #     )
+
+            # if iteration_data_chain is not None:  # <<< NEW
+            #     total_panel_rows = rows * 2
+            #     for r in range(total_panel_rows):
+            #         y = 1 - (r + 0.5) / total_panel_rows
+            #         fig.text(
+            #             1.005,
+            #             y,
+            #             "CHAIN" if r % 2 == 0 else "CLASS",
+            #             ha="left",
+            #             va="center",
+            #             fontsize=8,
+            #             fontweight="bold",
+            #             transform=fig.transFigure,
+            #         )
+
+            if iteration_data_chain is not None and axis_index % cols == 0:
+
+                # ---- find the *right-most* outer cell in this row -------------
+                row_end_idx = min(axis_index + cols - 1, len(plot_data) - 1)
+                last_ax_cell = axes[row_end_idx]  # outer “holder” axis
+                bb = last_ax_cell.get_position(fig)
+
+                # -- y-centres of the two stacked panels ------------------------
+                bb_fake = ax_fake.get_position(fig)
+                bb_true = ax_true.get_position(fig)
+                y_chain = 0.5 * (bb_fake.y0 + bb_fake.y1)
+                y_class = 0.5 * (bb_true.y0 + bb_true.y1)
+
+                x_txt = bb.x1 + 0.01  # a whisker to the right
+
+                fig.text(
+                    x_txt,
+                    y_chain,
+                    "CHAIN",
+                    ha="left",
+                    va="center",
+                    fontsize=8,
+                    fontweight="bold",
+                )
+
+                fig.text(
+                    x_txt,
+                    y_class,
+                    "CLASS",
+                    ha="left",
+                    va="center",
+                    fontsize=8,
+                    fontweight="bold",
+                )
+
+        # # ------------------------------------------------------------------
+        # # 5)  SHARED LEGENDS + SUPERTITLE  (unchanged code)
+        # # ------------------------------------------------------------------
+        # # (Everything from here down to the final savefig is *identical* to
+        # #  your original block – copy it without edits.)
+        # # ------------------------------------------------------------------
+        # # ---------------- copy-start -------------------------------------
+        # for label, handle in list(all_handles_labels.items()):
+        #     new_label = label
+        #     if label in all_legends_info_main[lowest_iteration]:
+        #         new_label = all_legends_info_main[lowest_iteration][label]["label"]
+        #     if new_label != label:
+        #         all_handles_labels[new_label] = handle
+        #         del all_handles_labels[label]
+
+        # fig.canvas.draw()
+        # legend1 = axes[0].legend(
+        #     all_handles_labels.values(),
+        #     all_handles_labels.keys(),
+        #     loc="upper left",
+        #     fontsize=7,
+        #     frameon=True,
+        #     title="Shared Legend for all Iterations",
+        #     title_fontsize="8",
+        # )
+        # fig.canvas.draw()
+        # axes[0].annotate(
+        #     f"i = {lowest_iteration}",
+        #     xy=(0, 0),
+        #     xycoords=legend1,
+        #     xytext=(2, -6),
+        #     textcoords="offset points",
+        #     ha="left",
+        #     va="top",
+        #     bbox=dict(
+        #         facecolor="white", edgecolor="grey", boxstyle="round,pad=0.4", alpha=0.5
+        #     ),
+        #     fontsize=7,
+        # )
+
+        # # per-subplot legends (main)
+        # for idx, entry in enumerate(plot_data):
+        #     if entry["iteration"] == lowest_iteration:
+        #         continue
+        #     ax_tmp = axes[idx]
+        #     legend_labels, legend_handles = [], []
+        #     for lbl in all_legends_info_main[entry["iteration"]]:
+        #         legend_labels.append(
+        #             all_legends_info_main[entry["iteration"]][lbl]["label"]
+        #         )
+        #         legend_handles.append(
+        #             all_legends_info_main[entry["iteration"]][lbl]["handle"]
+        #         )
+        #     legend_main = ax_tmp.legend(
+        #         legend_handles, legend_labels, loc="upper left", fontsize=7, frameon=True
+        #     )
+        #     fig.canvas.draw()
+        #     ax_tmp.annotate(
+        #         f"i = {entry['iteration']}",
+        #         xy=(0, 0),
+        #         xycoords=legend_main,
+        #         xytext=(2, -6),
+        #         textcoords="offset points",
+        #         ha="left",
+        #         va="top",
+        #         bbox=dict(
+        #             facecolor="white", edgecolor="grey", boxstyle="round,pad=0.4", alpha=0.5
+        #         ),
+        #         fontsize=7,
+        #     )
+
+        # # shared inset legend
+        # for label, handle in list(all_handles_labels_inset.items()):
+        #     new_label = label
+        #     if label in all_legends_info_inset[lowest_iteration_inset]:
+        #         new_label = all_legends_info_inset[lowest_iteration_inset][label]["label"]
+        #     if new_label != label:
+        #         all_handles_labels_inset[new_label] = handle
+        #         del all_handles_labels_inset[label]
+
+        # if self.include_inset and first_inset_ax_true or first_inset_ax_fake:
+        #     first_inset_ax_true.legend(
+        #         all_handles_labels_inset.values(),
+        #         all_handles_labels_inset.keys(),
+        #         loc="upper left",
+        #         fontsize=5,
+        #         frameon=True,
+        #         title="Shared Legend for all Insets",
+        #         title_fontsize="6",
+        #     )
+
+        #     if first_inset_ax_fake is not None:
+        #         first_inset_ax_fake.legend(
+        #             all_handles_labels_inset.values(),
+        #             all_handles_labels_inset.keys(),
+        #             loc="upper left",
+        #             fontsize=5,
+        #             frameon=True,
+        #             title="Shared Legend for all Insets",
+        #             title_fontsize="6",
+        #         )
+
+        # ------------------------------------------------------------------
+        # 5)  ONE *SUPER* LEGEND  (figure-level, main + inset combined)
+        # ------------------------------------------------------------------
+        from collections import OrderedDict
+
+        # # (a)  pretty-print labels that carry the “counts” text  -------------
+        # for lbl in list(all_handles_labels):
+        #     if lbl in all_legends_info_main[lowest_iteration]:
+        #         pretty = all_legends_info_main[lowest_iteration][lbl]["label"]
+        #         if pretty != lbl:
+        #             all_handles_labels[pretty] = all_handles_labels.pop(lbl)
+
+        # for lbl in list(all_handles_labels_inset):
+        #     if (
+        #         self.include_inset
+        #         and lbl in all_legends_info_inset[lowest_iteration_inset]
+        #     ):
+        #         pretty = all_legends_info_inset[lowest_iteration_inset][lbl]["label"]
+        #         if pretty != lbl:
+        #             all_handles_labels_inset[pretty] = all_handles_labels_inset.pop(lbl)
+
+        for key in list(all_handles_labels):
+            if r"\Delta\chi^2" in key:  # detected threshold line
+                all_handles_labels[r"$\Delta\chi^2$-Threshold"] = (
+                    all_handles_labels.pop(key)
+                )  # ← keep same handle
+
+        fig.canvas.draw()
+
+        # (b)  merge MAIN+INSET handles – keep MAIN order, append new INSET --
+        combined_handles = OrderedDict()
+        combined_handles.update(all_handles_labels)
+        for lbl, hnd in all_handles_labels_inset.items():
+            if lbl not in combined_handles:
+                combined_handles[lbl] = hnd  # only add if not already present
+
+        # (c)  single super legend ------------------------------------------
+        fig.legend(
+            combined_handles.values(),
+            combined_handles.keys(),
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.05),  # one legend, slightly higher
+            ncol=min(len(combined_handles), 8),
+            frameon=True,
+            fontsize=7,
+            title="Shared Legend for all Iterations & Insets",
+            title_fontsize="8",
+        )
+
+        # leave headroom so the super-legend isn’t cut off
+        plt.subplots_adjust(top=0.83)
+
+        # ------------------------------------------------------------------
+        # 5-bis)  PER-SUBPLOT “COUNTS-ONLY” LEGENDS  (like the original code)
+        #         ───────────────────────────────────────────────────────────
+        #         • Every main panel keeps its own legend that shows the
+        #           sample counts (including the first iteration).
+        #         • We ALSO annotate each legend with “i = …”.
+        # ------------------------------------------------------------------
+        # for idx, entry in enumerate(plot_data):
+
+        #     # axis that corresponds to this iteration
+        #     # ax_tmp = axes[idx]
+        #     ax_tmp = main_axes[idx]
+
+        #     # legend_labels = []
+        #     # legend_handles = []
+        #     # for lbl in all_legends_info_main[entry["iteration"]]:
+        #     #     legend_labels.append(
+        #     #         all_legends_info_main[entry["iteration"]][lbl]["label"]
+        #     #     )
+        #     #     legend_handles.append(
+        #     #         all_legends_info_main[entry["iteration"]][lbl]["handle"]
+        #     #     )
+
+        #     # legend_handles = [
+        #     #     info["handle"]
+        #     #     for info in all_legends_info_main[entry["iteration"]].values()
+        #     #     if "handle" in info
+        #     # ]
+        #     legend_handles = [
+        #         info["handle"]
+        #         for info in all_legends_info_main[entry["iteration"]].values()
+        #         if "handle" in info
+        #     ]
+        #     # legend_labels = [
+        #     #     info["label"]
+        #     #     for info in all_legends_info_main[entry["iteration"]].values()
+        #     #     if "handle" in info
+        #     # ]
+        #     legend_labels = [
+        #         info["label"]
+        #         for info in all_legends_info_main[entry["iteration"]].values()
+        #         if "handle" in info
+        #     ]
+
+        #     legend_main = ax_tmp.legend(
+        #         legend_handles,
+        #         legend_labels,
+        #         loc="upper left",
+        #         fontsize=7,
+        #         frameon=True,
+        #     )
+
+        #     # small annotation “i = …” inside that legend’s BBox
+        #     fig.canvas.draw()  # make sure bbox exists
+        #     ax_tmp.annotate(
+        #         f"i = {entry['iteration']}",
+        #         xy=(0, 0),
+        #         xycoords=legend_main,
+        #         xytext=(2, -6),
+        #         textcoords="offset points",
+        #         ha="left",
+        #         va="top",
+        #         bbox=dict(
+        #             facecolor="white",
+        #             edgecolor="grey",
+        #             boxstyle="round,pad=0.4",
+        #             alpha=0.5,
+        #         ),
+        #         fontsize=7,
+        #     )
+
+        # ------------------------------------------------------------------
+        # 5-bis)  one counts-only legend inside *every* panel
+        # ------------------------------------------------------------------
+
+        for ax, outer_idx, is_fake in panel_axes:  # <<< MOD
+            key = outer_idx if not is_fake else (outer_idx, "fake")  # <<< NEW
+            infos = all_legends_info_main[key].values()  # <<< MOD
+            handles = [i["handle"] for i in infos if "handle" in i]
+            labels = [i["label"] for i in infos if "handle" in i]
+
+            leg = ax.legend(
+                handles,
+                labels,
+                loc="upper left",
+                fontsize=7,
+                frameon=True,
+            )
+
+            fig.canvas.draw()  # so bbox exists
+            ax.annotate(
+                f"i = {outer_idx}",
+                xy=(0, 0),
+                xycoords=leg,
+                xytext=(2, -6),
+                textcoords="offset points",
+                ha="left",
+                va="top",
+                bbox=dict(
+                    facecolor="white",
+                    edgecolor="grey",
+                    boxstyle="round,pad=0.4",
+                    alpha=0.5,
+                ),
+                fontsize=7,
+            )
+
+        # ------------------------------------------------------------------
+        # 6)  HEAVIER BORDER AROUND EACH TWO-PANEL CELL         (3)
+        # ------------------------------------------------------------------
+        for ax_cell in axes[: len(plot_data)]:  # <<< NEW
+            for spine in ax_cell.spines.values():
+                spine.set_linewidth(1.5)
+
+        # ------------------------------------------------------------------
+        # 7)  tick visibility – only left / bottom                 (2)
+        # ------------------------------------------------------------------
+        # for k, ax_true in enumerate(main_axes):  # <<< NEW
+
+        #     ax_true.tick_params(labelleft=False, labelbottom=False)
+        #     if k % cols == 0:
+        #         ax_true.tick_params(labelleft=True)
+        #     if k // cols == rows - 1:
+        #         ax_true.tick_params(labelbottom=True)
+
+        for ax, _, is_fake in panel_axes:
+
+            spec = ax.get_subplotspec().get_topmost_subplotspec()
+
+            # y-ticks on first outer column
+            ax.tick_params(labelleft=spec.is_first_col())
+
+            # x-ticks only on CLASS panels that are on the last outer row
+            ax.tick_params(labelbottom=(not is_fake) and spec.is_last_row())
+
+        # hide unused outer cells
+        for j in range(len(plot_data), len(axes)):
+            axes[j].axis("off")
+
+        if metric == "delta_chi_sq":
+            fig.supxlabel(r"$\Delta\chi^2$", fontsize=12, y=0.05)
+        else:
+            fig.supxlabel(r"$-\log(\mathcal{L})$", fontsize=12, y=0.05)
+        fig.supylabel("Counts" if stat == "count" else "Density", fontsize=12, x=0.08)
+
+        plt.subplots_adjust(wspace=0, hspace=0)
+        for fmt in self.save_formats:
+            plot_filename = f"per_iteration_{metric}_hist_{stat}.{fmt}"
+            save_path = os.path.join(self.analysis_dir, plot_filename)
+            plt.savefig(save_path, bbox_inches="tight", dpi=1000)
+        plt.close(fig)
+        if self.verbose >= 1:
+            print(
+                f"[_plot_per_iteration_hist] Saved histograms ({metric}, {stat}) to {save_path}"
+            )
+        # ---------------- copy-end ---------------------------------------
+
+    # ==================================================================
+    #  _plot_one_panel  — ORIGINAL CODE MOVED UNCHANGED
+    # ==================================================================
+    def _plot_one_panel(
+        self,
+        ax,
+        iteration,
+        lowest_iteration,
+        lowest_iteration_inset,
+        metric,
+        stat,
+        global_bin_edges,
+        x_min_inset,
+        x_max_inset,
+        y_min_inset,
+        y_max_inset,
+        main_arrays,
+        inset_arrays,
+        best_fit_loglkl,
+        is_fake,
+        all_handles_labels,
+        all_handles_labels_inset,
+        all_legends_info_main,
+        all_legends_info_inset,
+        first_inset_ax_container,
+        threshold_label_added_container,
+        threshold_label_added_inset_container,
+    ):
+        """
+        This is **literally** your old inner-loop, parameterised so
+        we can reuse it for CHAIN and CLASS.  Nothing has been edited
+        except that we:
+        • receive `main_arrays` / `inset_arrays` as arguments
+        • pick the correct count-dictionary depending on `is_fake`
+        """
+
+        # pick counts dict
+        cp = (
+            self.count_points_chain if is_fake else self.count_points
+        )  # <<< NEW (choose counts)
+
+        # NEW: pick a dict-key that keeps CLASS and CHAIN separate
+        dict_key = iteration if not is_fake else (iteration, "fake")  # <<< NEW
+        all_legends_info_main.setdefault(dict_key, {})  # <<< NEW
+
+        delta_threshold = getattr(self.param_connect, "delta_chi2_threshold", None)
+        if isinstance(delta_threshold, list):
+            if iteration < len(delta_threshold):
+                delta_threshold = delta_threshold[iteration]
+            else:
+                delta_threshold = delta_threshold[-1]
+
+        # ----------------------------------------------------------------
+        # Everything below is 100 % the original code – only `cp`
+        # substituted where it used to be `self.count_points`.
+        # ----------------------------------------------------------------
+        # all_legends_info_main.setdefault(iteration, {})
+        ax.set_axisbelow(True)
+        ax.grid(True, which="major", linestyle="-", linewidth=0.5, alpha=0.5)
+
+        # --- Plot main panel categories ----------------------------------
+        for cat, arr, item_cfg in main_arrays:
+            color = item_cfg.get("color", None)
+            label = item_cfg.get("label", None)
+            plot_kws = item_cfg.get("plot_kws", {}).copy()
+            plot_kws["bins"] = global_bin_edges
+            if color is None:
+                color = self.DATA_COLORS.get(cat, "gray")
+            if label is None:
+                label = self.category_labels.get(cat, cat)
+
+            if metric == "delta_chi_sq":
+                key = f"delta_chi_sq_{cat}"
+            else:
+                key = cat
+
+            display = cp[iteration][key]["display"]
+            original = cp[iteration][key]["original"]
+            counts_str = (
+                f"{original} points"
+                if display is None or display == original
+                else f"showing $\\frac{{{display}}}{{{original}}}$ points"
+            )
+            all_legends_info_main[dict_key][label] = {"label": counts_str}
+
+            final_plot_kws = dict(plot_kws)
+            final_plot_kws.setdefault("color", color)
+            final_plot_kws.setdefault("label", label)
+            final_plot_kws.setdefault("stat", stat)
+            if len(arr) > 0:
+                sns.histplot(x=arr, ax=ax, **final_plot_kws)
+
+        # Optional vertical line -----------------------------------------
+        if metric == "delta_chi_sq" and delta_threshold is not None:
+            delta_label = (
+                f"$\\Delta\\chi^2\\mathrm{{-Threshold}}={delta_threshold:.1f}$"
+                if delta_threshold < 10000
+                else (
+                    r"$\Delta\chi^2\mathrm{-Threshold}="
+                    + self.sci_notation_latex(delta_threshold)
+                    + "$"
+                )
+            )
+            delta_value = (
+                f"{delta_threshold:.1f}"
+                if delta_threshold < 10000
+                else f"${self.sci_notation_latex(delta_threshold)}$"
+            )
+            ax.axvline(
+                delta_threshold, color="purple", linestyle="--", label=delta_label
+            )
+            all_legends_info_main[dict_key][delta_label] = {"label": delta_value}
+
+        elif (
+            metric == "loglkl"
+            and best_fit_loglkl is not None
+            and not np.isnan(best_fit_loglkl)
+        ):
+            bf_label = (
+                f"$\\mathrm{{Best-Fit:}}\\; -\\log(\\mathcal{{L}}) = {best_fit_loglkl:.1f}$"
+                if best_fit_loglkl < 10000
+                else (
+                    r"$\mathrm{Best-Fit:}\; -\log(\mathcal{L}) = "
+                    + self.sci_notation_latex(best_fit_loglkl)
+                    + "$"
+                )
+            )
+            bf_value = (
+                f"{best_fit_loglkl:.1f}"
+                if best_fit_loglkl < 10000
+                else self.sci_notation_latex(best_fit_loglkl)
+            )
+            ax.axvline(best_fit_loglkl, color="purple", linestyle="--", label=bf_label)
+            all_legends_info_main[dict_key][bf_label] = {"label": bf_value}
+
+        # ---- INSET ------------------------------------------------------
+        if self.include_inset and inset_arrays:
+            ax_inset = inset_axes(
+                ax, width="40%", height="40%", loc="upper right", borderpad=1
+            )
+            ax_inset.set_axisbelow(True)
+            ax_inset.grid(True, which="major", linestyle="-", linewidth=0.5, alpha=0.5)
+            # all_legends_info_inset.setdefault(iteration, {})
+            all_legends_info_inset.setdefault(dict_key, {})  # <<< NEW
+
+            if first_inset_ax_container[0] is None:
+                first_inset_ax_container[0] = ax_inset
+
+            for cat, arr, item_cfg in inset_arrays:
+                color = item_cfg.get("color", None) or self.DATA_COLORS.get(cat, "gray")
+                label = item_cfg.get("label", None) or self.category_labels.get(
+                    cat, cat
+                )
+                plot_kws = item_cfg.get("plot_kws", {}).copy()
+                plot_kws["bins"] = global_bin_edges
+                plot_kws.setdefault("color", color)
+                plot_kws.setdefault("label", label)
+                plot_kws.setdefault("stat", stat)
+                if len(arr) == 0:
+                    continue
+                sns.histplot(x=arr, ax=ax_inset, **plot_kws)
+
+                if metric == "delta_chi_sq":
+                    key = f"delta_chi_sq_{cat}"
+                else:
+                    key = cat
+
+                display = cp[iteration][key]["display"]
+                original = cp[iteration][key]["original"]
+                counts_str = (
+                    f"{original} points"
+                    if display is None or display == original
+                    else f"showing $\\frac{{{display}}}{{{original}}}$ points"
+                )
+                all_legends_info_inset[dict_key][label] = {"label": counts_str}
+
+            if x_min_inset is not None and x_max_inset is not None:
+                ax_inset.set_xlim(x_min_inset, x_max_inset)
+            if y_min_inset is not None and y_max_inset is not None:
+                ax_inset.set_ylim(y_min_inset, y_max_inset)
+
+            # threshold / best-fit lines duplicated in inset
+            if metric == "delta_chi_sq" and delta_threshold is not None:
+                ax_inset.axvline(
+                    delta_threshold, color="purple", linestyle="--", linewidth=1
+                )
+
+                all_legends_info_inset[dict_key][delta_label] = {"label": delta_value}
+            elif (
+                metric == "loglkl"
+                and best_fit_loglkl is not None
+                and not np.isnan(best_fit_loglkl)
+            ):
+                ax_inset.axvline(
+                    best_fit_loglkl, color="purple", linestyle="--", linewidth=1
+                )
+                all_legends_info_inset[dict_key][bf_label] = {"label": bf_value}
+
+            ax_inset.tick_params(axis="both", labelsize=6)
+            ax_inset.set_xlabel("")
+            ax_inset.set_ylabel("")
+            ax_inset.minorticks_on()
+
+            handles, labels = ax_inset.get_legend_handles_labels()
+            for h, l in zip(handles, labels):
+                # all_legends_info_inset[iteration].setdefault(l, {})["handle"] = h
+                # if r"\Delta\chi^2\mathrm{-Threshold}=" in l or r"\mathrm{Best-Fit" in l:
+                #     if not threshold_label_added_inset_container[0]:
+                #         all_handles_labels_inset[l] = h
+                #         threshold_label_added_inset_container[0] = True
+                #     continue
+
+                # 1. ALWAYS keep the handle for the per-subplot legend
+                info = all_legends_info_inset[dict_key].setdefault(l, {})
+                info["handle"] = h
+
+                # 2. Add this artist to the *super* inset-legend only once
+                if r"\Delta\chi^2" in l or r"\mathrm{Best-Fit" in l:
+                    if not threshold_label_added_inset_container[0]:
+                        all_handles_labels_inset[l] = h
+                        threshold_label_added_inset_container[0] = True
+                # no `continue` → we’ve already stored the handle; the rest of
+                #   the loop body is harmless so we just fall through
+                else:
+                    if l not in all_handles_labels_inset:
+                        all_handles_labels_inset[l] = h
+
+            if self.x_range_inset is not None:
+                ax_inset.set_xlim(self.x_range_inset)
+            if self.y_range_inset is not None:
+                ax_inset.set_ylim(self.y_range_inset)
+            # per-subplot legends (inset)
+
+            if iteration > lowest_iteration_inset:
+                # legend_labels = [
+                #     all_legends_info_inset[iteration][lbl]["label"]
+                #     for lbl in all_legends_info_inset[iteration]
+                # ]
+                # legend_handles = [
+                #     all_legends_info_inset[iteration][lbl]["handle"]
+                #     for lbl in all_legends_info_inset[iteration]
+                # ]
+
+                legend_handles = [
+                    info["handle"]
+                    for info in all_legends_info_inset[dict_key].values()
+                    if "handle" in info
+                ]
+                legend_labels = [
+                    info["label"]
+                    for info in all_legends_info_inset[dict_key].values()
+                    if "handle" in info
+                ]
+
+                ax_inset.legend(
+                    legend_handles,
+                    legend_labels,
+                    loc="upper left",
+                    fontsize=6,
+                    frameon=True,
+                )
+        # ------ MAIN legend bookkeeping ---------------------------------
+        handles, labels = ax.get_legend_handles_labels()
+        for h, l in zip(handles, labels):
+            # all_legends_info_main[iteration].setdefault(l, {})["handle"] = h
+            # if r"\Delta\chi^2\mathrm{-Threshold}=" in l or r"\mathrm{Best-Fit" in l:
+            #     if not threshold_label_added_container[0]:
+            #         all_handles_labels[l] = h
+            #         threshold_label_added_container[0] = True
+            #     continue
+            # if l not in all_handles_labels:
+            #     all_handles_labels[l] = h
+
+            info = all_legends_info_main[dict_key].setdefault(l, {})
+            info["handle"] = h
+
+            # 1. ALWAYS keep the handle for the per-subplot legend
+            if r"\Delta\chi^2" in l or r"\mathrm{Best-Fit" in l:
+                if not threshold_label_added_container[0]:
+                    all_handles_labels[l] = h
+                    threshold_label_added_container[0] = True
+            # no `continue` → we’ve already stored the handle; the rest of
+            #   the loop body is harmless so we just fall through
+            else:
+                if l not in all_handles_labels:
+                    all_handles_labels[l] = h
+        # ----------------------------------------------------------------
+
+        from matplotlib.ticker import LogLocator
+
+        ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=None))
+        ax.minorticks_on()
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
+        # custom x/y-range overrides (unchanged)
+        if self.x_range is not None:
+            ax.set_xlim(self.x_range)
+        if self.y_range is not None:
+            ax.set_ylim(self.y_range)
 
     def _compute_global_inset_ranges(self, all_inset_plots, metric, stat, bins="auto"):
         """
@@ -6113,60 +7566,129 @@ class Analyze_likelihoods:
 
         return last_complete_it
 
-    def _create_dummy_df(self, iteration_data, metric="delta_chi_sq"):
+    # def _create_dummy_df(self, iteration_data, metric="delta_chi_sq"):
+    #     """
+    #     Create a combined histogram across selected categories and iterations using Seaborn's histplot.
+
+    #     Parameters
+    #     ----------
+    #     iteration_data : dict
+    #         The dictionary returned by _gather_iteration_data().
+    #     metric : str
+    #         The metric to plot, e.g., 'delta_chi_sq' or 'loglkl'.
+    #     """
+    #     if self.verbose >= 2:
+    #         print(
+    #             f"[_create_dummy_df] Creating dummy DataFrame for {metric} combined histogram."
+    #         )
+
+    #     # Combine categories from main panel and (optionally) inset
+    #     selected_categories = {panel["category"] for panel in self.hist_main_panel}
+    #     if self.include_inset:
+    #         selected_categories.update(panel["category"] for panel in self.hist_inset)
+
+    #     # 1. Gather all data into a DataFrame
+    #     plot_rows = []
+    #     for iteration, i_data in iteration_data.items():
+    #         for cat in selected_categories:  # Only include selected categories
+    #             if metric == "delta_chi_sq":
+    #                 arr = i_data.get(
+    #                     f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
+    #                 )
+    #             else:  # loglkl
+    #                 arr = i_data.get(cat, np.array([], dtype=np.float32))
+
+    #             if len(arr) == 0:
+    #                 continue  # Skip empty categories
+
+    #             # Create a unique identifier for category-iteration
+    #             category_iteration = (
+    #                 f"{self.category_labels.get(cat, cat)}_i{iteration}"
+    #             )
+
+    #             for val in arr:
+    #                 plot_rows.append(
+    #                     {"value": val, "category_iteration": category_iteration}
+    #                 )
+
+    #     if not plot_rows:
+    #         if self.verbose >= 2:
+    #             print(
+    #                 f"[_create_dummy_df] No data available for {metric} combined histogram."
+    #             )
+    #         return
+
+    #     df = pd.DataFrame(plot_rows)
+
+    #     return df
+
+    def _create_dummy_df(
+        self,
+        iteration_data,
+        iteration_data_chain=None,
+        metric="delta_chi_sq",
+    ):
         """
-        Create a combined histogram across selected categories and iterations using Seaborn's histplot.
+        Create a combined histogram DataFrame across selected categories and
+        iterations, for both CLASS-based (true) and optional CHAIN-based (fake)
+        likelihoods.
 
         Parameters
         ----------
         iteration_data : dict
-            The dictionary returned by _gather_iteration_data().
+            The dict returned by _gather_iteration_data().
+        iteration_data_chain : dict or None
+            If provided, a parallel dict returned by _gather_iteration_data_chain().
+            Rows from this dataset will be tagged "chain" in the 'source' column.
         metric : str
-            The metric to plot, e.g., 'delta_chi_sq' or 'loglkl'.
+            'delta_chi_sq' or 'loglkl'.
+        Returns
+        -------
+        df : pandas.DataFrame or None
+            Columns: value, category_iteration, source.  Returns None if no data.
         """
         if self.verbose >= 2:
-            print(
-                f"[_create_dummy_df] Creating dummy DataFrame for {metric} combined histogram."
-            )
+            print(f"[_create_dummy_df] Building histogram DataFrame for {metric}")
 
-        # Combine categories from main panel and (optionally) inset
-        selected_categories = {panel["category"] for panel in self.hist_main_panel}
+        # which categories to include
+        selected = {p["category"] for p in self.hist_main_panel}
         if self.include_inset:
-            selected_categories.update(panel["category"] for panel in self.hist_inset)
+            selected.update({p["category"] for p in self.hist_inset})
 
-        # 1. Gather all data into a DataFrame
-        plot_rows = []
-        for iteration, i_data in iteration_data.items():
-            for cat in selected_categories:  # Only include selected categories
-                if metric == "delta_chi_sq":
-                    arr = i_data.get(
-                        f"delta_chi_sq_{cat}", np.array([], dtype=np.float32)
-                    )
-                else:  # loglkl
-                    arr = i_data.get(cat, np.array([], dtype=np.float32))
+        rows = []
 
-                if len(arr) == 0:
-                    continue  # Skip empty categories
+        def gather(data_dict, source_label):
+            """Helper to pull rows from one iteration_data dict."""
+            for it, i_data in data_dict.items():
+                for cat in selected:
+                    key = f"{metric}_{cat}" if metric == "delta_chi_sq" else cat
+                    arr = i_data.get(key, np.array([], dtype=np.float32))
+                    if len(arr) == 0:
+                        continue
+                    label = self.category_labels.get(cat, cat)
+                    # unique identifier per iteration+category
+                    cat_it = f"{label}_i{it}"
+                    for v in arr:
+                        rows.append(
+                            {
+                                "value": v,
+                                "category_iteration": cat_it,
+                            }
+                        )
 
-                # Create a unique identifier for category-iteration
-                category_iteration = (
-                    f"{self.category_labels.get(cat, cat)}_i{iteration}"
-                )
+        # gather CLASS (true) data
+        gather(iteration_data, "class")
 
-                for val in arr:
-                    plot_rows.append(
-                        {"value": val, "category_iteration": category_iteration}
-                    )
+        # optionally gather CHAIN (fake) data
+        if iteration_data_chain is not None:
+            gather(iteration_data_chain, "chain")
 
-        if not plot_rows:
+        if not rows:
             if self.verbose >= 2:
-                print(
-                    f"[_create_dummy_df] No data available for {metric} combined histogram."
-                )
-            return
+                print(f"[_create_dummy_df] No data available for {metric}")
+            return None
 
-        df = pd.DataFrame(plot_rows)
-
+        df = pd.DataFrame(rows)
         return df
 
     def compute_global_bin_edges_seaborn_internal(
@@ -6469,9 +7991,6 @@ class Analyze_likelihoods:
             []
         )  # fraction of newly accepted whose delta_chi^2 > threshold
 
-        # If user provided a threshold
-        chi2_threshold = getattr(self.param_connect, "delta_chi2_threshold", None)
-
         # Sort iteration keys
         sorted_iters = sorted(iteration_data.keys())
 
@@ -6480,6 +7999,14 @@ class Analyze_likelihoods:
             if "best_fit_loglkl" not in i_data:
                 # skip incomplete iteration
                 continue
+
+            chi2_threshold = getattr(self.param_connect, "delta_chi2_threshold", None)
+            # if chi2_threshold is a list:
+            if isinstance(chi2_threshold, list):
+                if it < len(chi2_threshold):
+                    chi2_threshold = chi2_threshold[it]
+                else:
+                    chi2_threshold = chi2_threshold[-1]
 
             # Record iteration number
             iterations.append(it)
@@ -6882,17 +8409,25 @@ class PlotIterations:
         auto_selected_contourline_density=False,
         iterations_to_plot="all",
         show_super_legend=True,
+        use_bold_subplot_legend="auto",
         interpolation_method="cubic",
         iteration0_figure_insert=False,
         include_lkldiscard_new_for_axis_range=True,
         include_discard_iter0_remnants_for_axis_range=False,
+        exclude_iter0_discard_clutter_lower_panels=True,
         axis_labels=None,
         data_types_to_plot=None,
         save_x_y_loglkl=False,
         pickle_contour_data=None,
         delta_chi2_threshold_color="purple",
         delta_chi2_threshold_linewidth=2.0,
-        plot_threshold_line=True,
+        plot_threshold_line=False,
+        log_x=False,
+        log_y=False,
+        show_counts_in_legend=True,
+        subplot_legend_location="upper left",
+        tall_subplots=True,
+        fig_width="440 pts",
     ):
         """
         Initialize the PlotIterations class with user configuration and data.
@@ -6939,7 +8474,17 @@ class PlotIterations:
         verbose : int, optional
             Verbosity level.
         """
-
+        self.use_layout_A = tall_subplots
+        self.subplot_legend_location = subplot_legend_location
+        self.use_bold_subplot_legend = use_bold_subplot_legend
+        if use_bold_subplot_legend == "auto":
+            self.use_bold_subplot_legend = True
+        if self.use_layout_A and use_bold_subplot_legend == "auto":
+            self.use_bold_subplot_legend = (
+                False
+                # Disable bold subplot legend for layout A
+            )
+        self.fig_width = fig_width
         self.data = data
         self.param_x = param_x
         self.param_y = param_y
@@ -6986,6 +8531,9 @@ class PlotIterations:
         self.include_discard_iter0_remnants_for_axis_range = (
             include_discard_iter0_remnants_for_axis_range
         )
+        self.exclude_iter0_discard_clutter_lower_panels = (
+            exclude_iter0_discard_clutter_lower_panels
+        )
         self.save_x_y_loglkl = save_x_y_loglkl
         self.pickle_contour_data = pickle_contour_data
         self.cmap_norm_type = cmap_norm_type
@@ -7004,6 +8552,9 @@ class PlotIterations:
             self.xlabel = self.axis_labels.get(param_x, param_x)
             self.ylabel = self.axis_labels.get(param_y, param_y)
 
+        self.log_x = log_x
+        self.log_y = log_y
+
         if self.draw_contours:
             self.xs_all, self.ys_all, self.loglkl_all = (
                 self._gather_all_likelihood_points()
@@ -7014,6 +8565,8 @@ class PlotIterations:
             self.loglkl_all = None
 
         self.used_keys = set()
+        self._legend_counts = {}
+        self.show_counts_in_legend = show_counts_in_legend
 
         # Set legend_labels and marker_styles with defaults if None
         self.legend_labels = self._set_default_legend_labels(legend_labels)
@@ -7137,7 +8690,47 @@ class PlotIterations:
 
         # Set matplotlib to default settings
         matplotlib.rcParams.update(matplotlib.rcParamsDefault)
-        matplotlib.use("Agg")
+        matplotlib.use("Agg")  # Use non-interactive backend for saving figures
+
+        fontsize = 11
+        latex_preamble = r"\usepackage{color} \usepackage{xcolor} \usepackage{siunitx} \usepackage{amsmath} \usepackage{amsfonts} \usepackage{amssymb} \usepackage{mathtools} \usepackage{bm} \usepackage{mathrsfs} \parindent = 0pt"
+
+        matplotlib.rcParams.update(
+            {
+                "text.usetex": (
+                    False  # if self.xlabel and self.ylabel is not None else False
+                ),
+                "font.family": "serif",
+                "font.serif": "cmr10",
+                "font.size": fontsize,
+                "mathtext.fontset": "cm",
+                "text.latex.preamble": latex_preamble,
+            }
+        )
+
+        plt.rcParams["figure.dpi"] = 600
+        plt.rcParams["savefig.dpi"] = 600
+        matplotlib.rcParams["hatch.linewidth"] = 0.5
+        plt.rcParams["xtick.labelsize"] = 8
+        plt.rcParams["ytick.labelsize"] = 8
+        plt.rcParams["legend.fontsize"] = 9
+        # plt.rcParams["axes.linewidth"] = (
+        #     10  # Sets a default thickness for all axes spines
+        # )
+
+        # make all axes spines thicker
+        plt.rcParams["axes.linewidth"] = 0.9  # default is usually 0.8
+
+        # make all ticks a bit longer and a bit thicker
+        plt.rcParams["xtick.major.size"] = 3.5  # default ~3.5
+        plt.rcParams["ytick.major.size"] = 3.5
+        plt.rcParams["xtick.major.width"] = 0.8  # default ~0.8
+        plt.rcParams["ytick.major.width"] = 0.8  # default ~0.8
+
+        # make your legend boxes thicker
+        plt.rcParams["legend.frameon"] = True
+        # plt.rcParams['legend.edgecolor']    = 'black'
+        plt.rcParams["legend.framealpha"] = 1.0
 
         # Determine axis ranges
         self._determine_axis_ranges()
@@ -7225,12 +8818,30 @@ class PlotIterations:
                 )
 
         # Create figure and axes
+
+        # Set fixed figure size
+
+        unit = self.fig_width.split()[1]
+        value = float(self.fig_width.split()[0])
+
+        if unit == "in":
+            width = value  # Already in inches
+        elif unit == "cm":
+            width = value / 2.54  # Convert cm to inches
+        elif unit == "pts":
+            width = value / 72.27  # Convert TeX points to inches
+        else:
+            raise ValueError(f"Unrecognized unit in fig_width: {unit}")
+
         cols = len(self.iteration_groups)
+
+        width_per_col = width / cols
+
         rows = 2
         fig, axes = plt.subplots(
             rows,
             cols,
-            figsize=(cols * 3, rows * 3),
+            figsize=(cols * width_per_col, rows * width_per_col),
             sharex=True,
             sharey=True,
             # constrained_layout=True
@@ -7243,7 +8854,6 @@ class PlotIterations:
         # Define absolute position of the super ylabel and colorbar
         fig_width, fig_height = fig.get_size_inches()
 
-        ylabel_xpos = -0.77  # 0.4inches = 1cm
         colorbar_xpos = 0.2  # 0.4inches = 1cm
         colorbar_width = 0.4  # 0.4inches = 1cm
 
@@ -7266,8 +8876,58 @@ class PlotIterations:
         # **Apply the axis limits to all subplots based on calculated ranges**
         for c in range(cols):
             for r in range(rows):
-                axes[r, c].set_xlim(self.x_min, self.x_max)
-                axes[r, c].set_ylim(self.y_min, self.y_max)
+                # axes[r, c].set_xlim(self.x_min, self.x_max)
+                # axes[r, c].set_ylim(self.y_min, self.y_max)
+
+                x0, x1 = self.x_min, self.x_max
+                y0, y1 = self.y_min, self.y_max
+                dx = (x1 - x0) * 0.05
+                dy = (y1 - y0) * 0.05
+                axes[r, c].set_xlim(x0 - dx, x1 + dx)
+                axes[r, c].set_ylim(y0 - dy, y1 + dy)
+
+        # Layout A: make room for subplot-legends by enlarging the figure height and adjusting default data limits
+        if getattr(self, "use_layout_A", False):
+            # 1) force a draw so legend bbox is valid
+
+            # after you’ve drawn your figure and created all legends:
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+
+            # 1) find the maximum legend‐height fraction (relative to its own axes)
+            max_frac = 0.0
+            for ax in axes.flatten():
+                leg = ax.get_legend()
+                if leg is None:
+                    continue
+
+                # get legend bbox in display coords
+                bbox_disp = leg.get_window_extent(renderer)
+
+                # convert into axes coords (0…1)
+                bbox_ax = bbox_disp.transformed(ax.transAxes.inverted())
+                max_frac = max(max_frac, bbox_ax.height)
+
+            h_ax = axes[0, 0].get_position().height
+
+            # 1) capture the *original* shared y-limits
+            orig_y0, orig_y1 = axes[0, 0].get_ylim()
+            dy = orig_y1 - orig_y0
+
+            # 2) compute the new top of the axis
+            new_top = orig_y1 + max_frac * dy
+            if self.y_range is None:
+                axes[0, 0].set_ylim(orig_y0, new_top)
+
+            if max_frac > 0:
+                # 2) enlarge the figure by that same fraction
+                w, h = fig.get_size_inches()
+                fig.set_size_inches(w, h + 2 * max_frac * h_ax)
+
+                # # 3) pad every axes’ y‐limits by that fraction of its data‐range
+                # for ax in axes.flatten():
+                #     ax.set_ylim(
+                #         orig_y0, new_top)
 
         # Allocate space for super legend and shared axis labels and colorbar
         fig.subplots_adjust(
@@ -7283,14 +8943,96 @@ class PlotIterations:
         if self.show_super_labels:
 
             if self.xlabel is not None:
-                fig.supxlabel(self.xlabel, fontsize=15, y=-0.083)
-            else:
-                fig.supxlabel(self.param_x, fontsize=15, y=-0.083)
+                # Update usetext to True
+                matplotlib.rcParams["text.usetex"] = True
+                # fig.supxlabel(self.xlabel, fontsize=10, y=-0.083)
+            # else:
+            # fig.supxlabel(self.param_x, fontsize=10, y=-0.083)
 
             if self.ylabel is not None:
-                fig.supylabel(self.ylabel, fontsize=15, x=ylabel_xpos / fig_width)
-            else:
-                fig.supylabel(self.param_y, fontsize=15, x=ylabel_xpos / fig_width)
+                # ylabel_xpos = -0.77  # 0.4inches = 1cm
+                matplotlib.rcParams["text.usetex"] = True
+                # fig.supylabel(self.ylabel, fontsize=10, x=ylabel_xpos / fig_width)
+            # else:
+            # fig.supylabel(self.param_y, fontsize=10, x=ylabel_xpos / fig_width)
+
+            # # after you’ve created fig,axes … and you know your pad in inches:
+            # pad_inches_y_label = (
+            #     0.425 - 0.05
+            # )  # how much physical padding you want, in inches
+            # pad_inches_x_label = (
+            #     0.4 - 0.05
+            # )  # how much physical padding you want, in inches
+
+            # fig_width, fig_height = fig.get_size_inches()
+
+            # # convert that to a fraction of the figure
+            # pad_frac_y = pad_inches_y_label / fig_width
+            # pad_frac_x = pad_inches_x_label / fig_height
+
+            # # now place your super‐labels at exactly that physical offset
+            # fig.supxlabel(
+            #     self.xlabel or self.param_x,
+            #     fontsize=11,
+            #     y=-pad_frac_x,  # this is pad_inches_y_label from the bottom
+            #     ha="center",
+            # )
+            # fig.supylabel(
+            #     self.ylabel or self.param_y,
+            #     fontsize=11,
+            #     x=-pad_frac_y,  # this is pad_inches to the *left* of the left edge
+            #     va="center",
+            #     rotation="vertical",
+            # )
+
+            from matplotlib.transforms import Bbox
+
+            # 1) draw everything so tick‐label bboxes are live
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+
+            # ———— super‐xlabel ————————————————————————————————
+            ax_bot = axes[-1, 0]
+            xticks = [lbl for lbl in ax_bot.get_xticklabels() if lbl.get_text()]
+            bboxes = [lbl.get_window_extent(renderer) for lbl in xticks]
+
+            if bboxes:
+                bb = Bbox.union(bboxes)
+                pad_px = 8
+                y_disp = bb.y0 - pad_px  # 8px below lowest tick‐label
+                _, y_fig = fig.transFigure.inverted().transform((0, y_disp))
+
+                fig.text(
+                    0.5,  # centered horizontally in figure
+                    y_fig,  # exactly 8px below the xtick text
+                    self.xlabel or self.param_x,
+                    ha="center",  # center text on x=0.5
+                    va="top",  # place text *above* the y_fig line
+                    fontsize=11,
+                    transform=fig.transFigure,
+                )
+
+            # ———— super‐ylabel ————————————————————————————————
+            ax_left = axes[0, 0]
+            yticks = [lbl for lbl in ax_left.get_yticklabels() if lbl.get_text()]
+            bboxes = [lbl.get_window_extent(renderer) for lbl in yticks]
+
+            if bboxes:
+                bb = Bbox.union(bboxes)
+                pad_px = 10
+                x_disp = bb.x0 - pad_px  # 8px left of the leftmost y‐tick text
+                x_fig, _ = fig.transFigure.inverted().transform((x_disp, 0))
+
+                fig.text(
+                    x_fig,  # exactly 8px left of the y‐tick text
+                    0.5,  # vertically centered in figure
+                    self.ylabel or self.param_y,
+                    ha="right",  # place text *to the left* of x_fig
+                    va="center",  # center text vertically on y=0.5
+                    rotation="vertical",
+                    fontsize=11,
+                    transform=fig.transFigure,
+                )
 
         # After plotting all subplots, use first_contour_set for the colorbar
         if first_contour_set is not None:
@@ -7332,46 +9074,47 @@ class PlotIterations:
 
         for r in range(rows):
             for c in range(cols):
+                # Set margins
+                # axes[r, c].margins(x=0.55, y=0.55)  # Set margins for the axes
+
+                if self.log_x:
+                    axes[r, c].set_xscale("log")
+                if self.log_y:
+                    axes[r, c].set_yscale("log")
+
                 if c == 0:
                     axes[r, c].tick_params(
-                        labelleft=True, left=True
+                        labelleft=True, left=True, direction="inout", zorder=1000000
                     )  # Enable y-axis tick labels and ticks for the leftmost column
                 else:
                     axes[r, c].tick_params(
-                        labelleft=False, left=True
+                        labelleft=False, left=True, direction="inout", zorder=1000000
                     )  # Disable y-axis tick labels but keep ticks on other columns
+
+                for spine in axes[r, c].spines.values():
+                    spine.set_zorder(1000000)  # Set zorder for all spines
 
         # Add x-axis ticks without labels to the upper row (upper panel)
         for c in range(cols):
             axes[0, c].tick_params(
-                axis="x", which="both", bottom=True, top=False, labelbottom=False
+                axis="x",
+                which="both",
+                bottom=True,
+                top=False,
+                labelbottom=False,
+                zorder=1000000,
             )
 
         # Ensure x-axis ticks and labels for the lower row (lower panel)
         for c in range(cols):
             axes[1, c].tick_params(
-                axis="x", which="both", bottom=True, top=False, labelbottom=True
+                axis="x",
+                which="both",
+                bottom=True,
+                top=False,
+                labelbottom=True,
+                zorder=1000000,
             )
-
-        fontsize = 11
-        latex_preamble = r"\usepackage{siunitx} \usepackage{amsmath} \usepackage{amsfonts} \usepackage{amssymb} \usepackage{mathtools} \usepackage{bm} \usepackage{mathrsfs} \parindent = 0pt"
-
-        matplotlib.rcParams.update(
-            {
-                "text.usetex": (
-                    True if self.xlabel and self.ylabel is not None else False
-                ),
-                "font.family": "serif",
-                "font.serif": "cmr10",
-                "font.size": fontsize,
-                "mathtext.fontset": "cm",
-                "text.latex.preamble": latex_preamble,
-            }
-        )
-
-        plt.rcParams["figure.dpi"] = 1000
-        plt.rcParams["savefig.dpi"] = 1000
-        matplotlib.rcParams["hatch.linewidth"] = 0.5
 
         # Save the figure
         os.makedirs(self.output_folder, exist_ok=True)
@@ -7381,7 +9124,7 @@ class PlotIterations:
         for fmt in self.save_formats:
             filename = f"iteration_plot_{param_x_safe}_{param_y_safe}.{fmt}"
             save_path = os.path.join(self.output_folder, "iteration_plots", filename)
-            fig.savefig(save_path, dpi=1000, format=fmt, bbox_inches="tight")
+            fig.savefig(save_path, dpi=600, format=fmt, bbox_inches="tight")
             if self.verbose >= 1:
                 print(f"Saved plot to {save_path}")
 
@@ -7408,10 +9151,10 @@ class PlotIterations:
             "accepted_old": "Accepted (Old)",
             "accepted_accumulated": "Accepted (Accumulated)",
             "discarded_iteration": "Discarded (Iteration)",
-            "discarded_oversampling": "Discarded (Oversampling filter)",
+            "discarded_oversampling": "Discarded (Oversampling)",
             "discarded_likelihood": "Discarded (Likelihood)",
-            "discarded_likelihood_new": "Discarded (Likelihood-filter new points)",
-            "discarded_likelihood_old": "Discarded (Likelihood-filter old points)",
+            "discarded_likelihood_new": "Discarded (Likelihood new)",
+            "discarded_likelihood_old": "Discarded (Likelihood old)",
             "failed_class": "Failed Class",
             "best_fit": "Best Fit",
             "accumulated_accepted_still": "Accepted (Still)",
@@ -7527,8 +9270,8 @@ class PlotIterations:
                 "fillstyle": "full",  # Solid for emphasis
                 "color": "iter_color",  # Iteration-based color
                 "edgecolor": "black",  # Black edge for emphasis
-                "linewidth": 0.8,  # Thicker edge
-                "size": self.marker_size + 70,  # Larger size to stand out
+                "linewidth": 1,  # Thicker edge #What is the default linewidth? It is:
+                "size": self.marker_size + 50,  # Larger size to stand out
                 "alpha": 1.0,  # Fully opaque
             },
             "accumulated_accepted_still": {
@@ -7626,6 +9369,14 @@ class PlotIterations:
             def get_df(block_key):
                 blk = iteration_data.get(block_key, {})
                 df = blk.get("parameters", None)
+
+                # Remove samples with NaN values or np.infinity
+                if df is not None:
+                    df = df.replace([np.inf, -np.inf], np.nan)  # Convert infs to NaN
+                    df = (
+                        df.dropna()
+                    )  # Drop rows with NaN (which now includes former infs)
+
                 if df is not None and not df.empty:
                     # Check x/y columns exist
                     if self.param_x not in df.columns or self.param_y not in df.columns:
@@ -7822,6 +9573,21 @@ class PlotIterations:
         # Plot contours if available
         self._plot_contours_if_available(ax, iteration_group, norm)
 
+        for key in [
+            "accepted_accumulated",
+            "discarded_iteration",
+            "discarded_likelihood_old",
+        ]:
+            try:
+                df = self.all_processed_data[max_it][key]
+                cols = list(df.columns) + ["iteration"]
+                break
+            except (KeyError, AttributeError):
+                continue
+        else:
+            # If all attempts failed, use the fallback
+            cols = [self.param_x, self.param_y, "iteration"]
+
         # Build "still accepted" from all iteration keys up to max_it
         accepted_accumulated_dfs = []
         for it in self.all_iteration_keys:  # <<-- changed
@@ -7835,15 +9601,19 @@ class PlotIterations:
         if accepted_accumulated_dfs:
             all_accepted_new = pd.concat(accepted_accumulated_dfs, ignore_index=True)
         else:
-            all_accepted_new = pd.DataFrame(
-                columns=[self.param_x, self.param_y, "iteration"]
-            )
+            # all_accepted_new = pd.DataFrame(
+            #     columns=[self.param_x, self.param_y, "iteration"]
+            # )
+
+            # Make an empty dataframe with the ALL parameter columns including "iteration", not just self.param_x and self.param_y
+            all_accepted_new = pd.DataFrame(columns=cols)
 
         # 2) Gather discarded_likelihood_old up to max_it
         old_discarded_all = []
         new_discarded_all = []
         for it in self.all_iteration_keys:
             if it <= max_it:
+
                 df = self.all_processed_data[it]["discarded_likelihood_old"]
                 if df is not None and not df.empty:
                     if "iteration" not in df.columns:
@@ -7859,24 +9629,34 @@ class PlotIterations:
         if old_discarded_all:
             df_old_discarded = pd.concat(old_discarded_all, ignore_index=True)
         else:
-            df_old_discarded = pd.DataFrame(
-                columns=[self.param_x, self.param_y, "iteration"]
-            )
+            # df_old_discarded = pd.DataFrame(
+            #     columns=[self.param_x, self.param_y, "iteration"]
+            # )
+
+            # Make an empty dataframe with the same columns as all_accepted_new
+            df_old_discarded = pd.DataFrame(columns=cols)
+
         if new_discarded_all:
             df_new_discarded = pd.concat(new_discarded_all, ignore_index=True)
         else:
-            df_new_discarded = pd.DataFrame(
-                columns=[self.param_x, self.param_y, "iteration"]
-            )
+            # df_new_discarded = pd.DataFrame(
+            #     columns=[self.param_x, self.param_y, "iteration"]
+            # )
+
+            # Make an empty dataframe with the same columns as all_accepted_new
+            df_new_discarded = pd.DataFrame(columns=cols)
 
         # 3) Subtract from accepted set
         combined_discarded = pd.concat(
             [df_old_discarded, df_new_discarded], ignore_index=True
         )
         if not combined_discarded.empty:
+            cols_merge = [col for col in combined_discarded if col != "iteration"]
             merged = all_accepted_new.merge(
-                combined_discarded[[self.param_x, self.param_y]],
-                on=[self.param_x, self.param_y],
+                # combined_discarded[[self.param_x, self.param_y]],
+                combined_discarded[cols_merge],
+                # on=[self.param_x, self.param_y],
+                on=cols_merge,
                 how="left",
                 indicator=True,
             )
@@ -7885,6 +9665,112 @@ class PlotIterations:
             )
         else:
             still_accepted = all_accepted_new
+
+        # Exludes discards originally accepted points from iteration 0 but discarded in iteration 1 or 2 from the plot to avoid clutter
+        if self.exclude_iter0_discard_clutter_lower_panels and max_it >= 2:
+            df0_accepted = self.all_processed_data[0]["accepted_new"]
+            if df0_accepted is not None and not df0_accepted.empty:
+
+                if df_old_discarded is not None and not df_old_discarded.empty:
+
+                    # 1) Split old_discarded into two subsets: iteration ∈ [1,2] vs. everything else
+                    mask_12 = df_old_discarded["iteration"].isin([1, 2])
+                    df_old_target = df_old_discarded[
+                        mask_12
+                    ].copy()  # This subset will be filtered
+                    df_old_rest = df_old_discarded[
+                        ~mask_12
+                    ].copy()  # df with iteration not in [1,2]
+
+                    if not df_old_target.empty:
+                        # 2) Extract iteration into “likelihood” for re‐alignment in compare_dataframes
+                        df_iteration = df_old_target["iteration"].copy().to_frame()
+
+                        # 3) Drop iteration so compare_dataframes doesn't match on it
+                        df_old_target = df_old_target.drop(columns=["iteration"])
+
+                        # 4) Drop iteration from df0_accepted if it has one (usually it does not)
+                        df0_stripped = df0_accepted.drop(
+                            columns=["iteration"], errors="ignore"
+                        )
+
+                        # 5) Compare: keep rows from df_old_target that are NOT in df0_accepted
+                        df_old_filtered, df_iteration = self.compare_dataframes(
+                            df1=df_old_target,
+                            df2=df0_stripped,
+                            df_likelihood=df_iteration,
+                            comparison_type="new",
+                            compare_context={
+                                "context": "Exclude iteration-0 discards (old) for it=1 or it=2",
+                                "df1": "df_old_discarded",
+                                "df2": "df0_accepted",
+                                "msg1": "No old discard data found",
+                                "msg2": "No iteration-0 accepted data found",
+                            },
+                        )
+
+                        if df_old_filtered is not None and not df_old_filtered.empty:
+                            # 6) Put iteration back
+                            df_old_filtered["iteration"] = df_iteration["iteration"]
+                        else:
+                            # If everything got filtered out
+                            df_old_filtered = pd.DataFrame(
+                                columns=df_old_target.columns.tolist() + ["iteration"]
+                            )
+
+                        # 7) Re‐concatenate the subset we filtered with the subset we left alone
+                        df_old_discarded = pd.concat(
+                            [df_old_filtered, df_old_rest], ignore_index=True
+                        )
+
+                    # else: if df_old_target was empty, do nothing – we keep df_old_discarded as is
+
+                # 4) Exclude iteration-0 discards from new_discarded
+
+                if df_new_discarded is not None and not df_new_discarded.empty:
+                    mask_12 = df_new_discarded["iteration"].isin([1, 2])
+                    df_new_target = df_new_discarded[
+                        mask_12
+                    ].copy()  # This subset will be filtered
+                    df_new_rest = df_new_discarded[
+                        ~mask_12
+                    ].copy()  # df with iteration not in [1,2]
+                    if not df_new_target.empty:
+                        # 2) Extract iteration into “likelihood” for re‐alignment in compare_dataframes
+                        df_iteration = df_new_target["iteration"].copy().to_frame()
+                        # 3) Drop iteration so compare_dataframes doesn't match on it
+                        df_new_target = df_new_target.drop(columns=["iteration"])
+                        # 4) Drop iteration from df0_accepted if it has one (usually it does not)
+                        df0_stripped = df0_accepted.drop(
+                            columns=["iteration"], errors="ignore"
+                        )
+                        # 5) Compare: keep rows from df_new_target that are NOT in df0_accepted
+                        df_new_filtered, df_iteration = self.compare_dataframes(
+                            df1=df_new_target,
+                            df2=df0_stripped,
+                            df_likelihood=df_iteration,
+                            comparison_type="new",
+                            compare_context={
+                                "context": "Exclude iteration-0 discards (new) for it=1 or it=2",
+                                "df1": "df_new_discarded",
+                                "df2": "df0_accepted",
+                                "msg1": "No new discard data found",
+                                "msg2": "No iteration-0 accepted data found",
+                            },
+                        )
+                        if df_new_filtered is not None and not df_new_filtered.empty:
+                            # 6) Put iteration back
+                            df_new_filtered["iteration"] = df_iteration["iteration"]
+                        else:
+                            # If everything got filtered out
+                            df_new_filtered = pd.DataFrame(
+                                columns=df_new_target.columns.tolist() + ["iteration"]
+                            )
+
+                        # 7) Re‐concatenate the subset we filtered with the subset we left alone
+                        df_new_discarded = pd.concat(
+                            [df_new_filtered, df_new_rest], ignore_index=True
+                        )
 
         # 4) Plot old_discarded => "accumulated_discarded_old"
         #    Use f"i < {max_it}" for the legend label
@@ -7897,10 +9783,10 @@ class PlotIterations:
                 ax,
                 df_old_discarded,
                 "accumulated_discarded_old",
-                iteration=f"i<{max_it}",
+                iteration=f"i$<${max_it}",
                 zorder=1,
             )
-            plotted_keys.append((f"i $<$ {max_it}", "accumulated_discarded_old"))
+            plotted_keys.append((f"i$<${max_it}", "accumulated_discarded_old"))
 
         zorder = 2
         # 4b) Plot new_discarded => "accumulated_discarded_new"
@@ -8000,6 +9886,16 @@ class PlotIterations:
             zorder=zorder,
         )
 
+        # Only do this if we have a valid iteration
+        # (best to skip storing for iteration=None)
+        if iteration is not None:
+            n_points = len(df)
+            # Accumulate or simply overwrite the count
+            # If you have repeated calls with the same (iteration, key) for the same Axes,
+            # you may need to decide whether to add or overwrite. Here we’ll just sum them up.
+            old_val = self._legend_counts.get((iteration, key, ax), 0)
+            self._legend_counts[(iteration, key, ax)] = old_val + n_points
+
     def _scatter_single(self, ax, x, y, style, iteration=None, zorder=1):
         """
         Plot a single point with given style.
@@ -8096,7 +9992,11 @@ class PlotIterations:
             if is_multi and key.startswith("discarded"):
                 style["edgecolor"] = "iter_color"  # Set edgecolor to 'iter_color'
 
-            handle, label_str = self._make_iteration_legend_entry(it, style)
+            count_here = 0
+            if hasattr(self, "_legend_counts"):
+                count_here = self._legend_counts.get((it, key, ax), 0)
+
+            handle, label_str = self._make_iteration_legend_entry(it, style, count_here)
             handles.append(handle)
             labels.append(label_str)
 
@@ -8104,16 +10004,33 @@ class PlotIterations:
             legend_obj = ax.legend(
                 handles,
                 labels,
-                loc="upper left",
-                fontsize=8,
+                loc=self.subplot_legend_location,  # upper left",
+                fontsize=6,
                 frameon=True,
-                markerscale=1.2,
+                markerscale=0.8,
                 handlelength=1,
-                framealpha=0.5,
+                labelspacing=0.25,
+                framealpha=0.65,
+                # prop={"weight": "550"},
             )
+
+            import matplotlib.patheffects as path_effects
+
+            for text in legend_obj.get_texts():
+                text.set_alpha(1.0)  # ensure fully visible
+                if self.use_bold_subplot_legend:
+                    text.set_path_effects(
+                        [
+                            path_effects.Stroke(
+                                linewidth=0.00005, foreground="black"
+                            ),  # thin border
+                            path_effects.Normal(),
+                        ]
+                    )
+            ax.figure.add_artist(legend_obj)
             legend_obj.set_zorder(15000)
 
-    def _make_iteration_legend_entry(self, iteration, style):
+    def _make_iteration_legend_entry(self, iteration, style, count=0):
         """
         Create a (handle, label_str) for a single iteration's style.
         The label is simply 'i={iteration}' or 'i=initial'.
@@ -8128,6 +10045,12 @@ class PlotIterations:
         else:
             # Default integer-based label
             label_str = f"i={iteration}"
+
+        if count > 0 and self.show_counts_in_legend:
+            if f"$<$" in label_str:
+                label_str += f" (N={count})"
+            else:
+                label_str += f"  (N={count})"
 
         # Extract style info
         marker = style.get("marker", "o")
@@ -8160,7 +10083,7 @@ class PlotIterations:
             marker=marker,
             color=base_edgecolor,  # line color
             markerfacecolor=facecolor,  # fill
-            markersize=7,
+            markersize=6.5,
             linestyle="",
             alpha=alpha,
             linewidth=linewidth,
@@ -8253,7 +10176,7 @@ class PlotIterations:
                 handler_map[dummy_handle] = PlotIterations.MulticolorHandler(
                     colors=colors,
                     marker=marker,
-                    markersize=10,
+                    markersize=6,
                 )
                 dummy_handle += 1
             else:
@@ -8277,7 +10200,7 @@ class PlotIterations:
                     color=actual_edgecolor,  # Line2D's `color` sets the edgecolor
                     markerfacecolor="none" if fillstyle == "none" else actual_color,
                     markeredgecolor=actual_edgecolor,  # Ensure edgecolor is included
-                    markersize=10,
+                    markersize=6,
                     linestyle="",
                     alpha=alpha,
                     linewidth=style.get("linewidth", 0.1),
@@ -8296,27 +10219,62 @@ class PlotIterations:
                     linewidth=self.delta_chi2_threshold_linewidth,
                 )
             )
-            labels.append(f"Δχ²-threshold = {self.delta_chi2_threshold}")
+
+            def format_number(x):
+                if abs(x) >= 1e5 or (abs(x) < 1e-5 and x != 0):
+                    return f"{x:.2e}"  # scientific notation with 2 decimal places
+                else:
+                    return f"{x:.5g}"  # up to 5 significant digits
+
+            if isinstance(self.delta_chi2_threshold, list):
+                # Show every threshold used from the list
+                formatted = [format_number(val) for val in self.delta_chi2_threshold]
+                labels.append(f"Δχ²-threshold = {', '.join(formatted)}")
+            else:
+                labels.append(
+                    f"Δχ²-threshold = {format_number(self.delta_chi2_threshold)}"
+                )
 
         # Create the legend only if there are handles to display
         if handles:
             num_handles = len(handles)
 
-            fig.legend(
+            # 1) decide how many inches *above* the top of the axes
+            pad_inches = 0.025
+
+            # 2) figure‐size in inches
+            fig_width, fig_height = fig.get_size_inches()
+
+            # 3) convert to a fraction of the figure height
+            pad_frac = pad_inches / fig_height
+
+            leg = fig.legend(
                 handles,
                 labels,
                 handler_map=handler_map,
-                loc="upper center",
+                loc="lower center",
                 ncol=(
                     num_handles if num_handles < 4 else (num_handles + 1) // 2
                 ),  # Dynamically set columns
-                bbox_to_anchor=(0.5, 1.15),  # Position above the top of the figure
+                bbox_to_anchor=(
+                    0.5,
+                    1.0 + pad_frac,
+                ),  # Adjusted position based on pad_frac
+                bbox_transform=fig.transFigure,
                 frameon=True,
-                fontsize=11,
+                # fancybox
+                fancybox=True,
+                fontsize=7,
                 handletextpad=0.5,  # Adjust padding between symbols and text
-                labelspacing=1.2,  # Adjust vertical spacing between rows
+                labelspacing=0.75,  # Adjust vertical spacing between rows
                 handlelength=4.0,  # Increase handle length to allocate more space for markers
             )
+
+            # Make the frame linewidth thicker
+            leg.get_frame().set_linewidth(1)
+            # Make the frame color 0.6:
+            leg.get_frame().set_edgecolor((0.8, 0.8, 0.8, 0.9))
+            # Is
 
     def _gather_all_likelihood_points(self):
         """
@@ -8567,6 +10525,7 @@ class PlotIterations:
         N=50,
         show_grid=False,
         contour_linewidths=0.2,
+        iteration=None,
     ):
         """
         1) Compute delta_chi2 using best_loglkl from the iteration group’s max iteration.
@@ -8671,16 +10630,20 @@ class PlotIterations:
             )
 
         # 8) *** Plot the delta_chi2 threshold line***
-        self.delta_chi2_threshold = getattr(
-            self.param_connect, "delta_chi2_threshold", None
-        )
-        if self.delta_chi2_threshold is not None and self.plot_threshold_line:
+
+        if isinstance(self.delta_chi2_threshold, list):
+            if iteration < len(self.delta_chi2_threshold):
+                delta_chi2_threshold = self.delta_chi2_threshold[iteration]
+            else:
+                delta_chi2_threshold = self.delta_chi2_threshold[-1]
+
+        if delta_chi2_threshold is not None and self.plot_threshold_line:
             # Plot a contour line at the threshold value. The level is a list with one element.
             ax.contour(
                 Xi,
                 Yi,
                 Zi,
-                levels=[self.delta_chi2_threshold],
+                levels=[delta_chi2_threshold],
                 colors=self.delta_chi2_threshold_color,
                 linewidths=self.delta_chi2_threshold_linewidth,
                 linestyles="-",
@@ -8998,6 +10961,7 @@ class PlotIterations:
                     N=self.N,
                     show_grid=self.show_grid,
                     contour_linewidths=self.contour_linewidths,
+                    iteration=max_it,
                 )
 
                 # If we're using a single shared colorbar, store this contour set if not already set
@@ -9026,11 +10990,12 @@ class PlotIterations:
         # 1) Create the inset axes.
         inset_ax = inset_axes(
             ax_main,
-            width="40%",  # 40% of parent Axes' width
-            height="40%",  # 40% of parent Axes' height
-            loc="upper right",  # Position of the inset
-            borderpad=2,
+            width="33%",  # 40% of parent Axes' width
+            height="33%",  # 40% of parent Axes' height
+            loc="upper right",  # "upper right",  # Position of the inset
+            borderpad=0.5,
         )
+        inset_ax.set_zorder(0)
 
         # 2) Determine which iterations to plot in the inset.
         #    Typically, only iteration 0.
@@ -9095,7 +11060,7 @@ class PlotIterations:
                     "marker": "*",
                     "fillstyle": "full",
                     "color": "iter_color",
-                    "size": self.marker_size + 70,  # Ensure it's visible in the inset
+                    "size": self.marker_size + 90,  # Ensure it's visible in the inset
                     "alpha": 1.0,
                 },
             )
@@ -9106,11 +11071,26 @@ class PlotIterations:
         inset_ax.set_ylim(self.y_min_global, self.y_max_global)
 
         # 8) Customize inset appearance
-        inset_ax.tick_params(labelsize=6, length=2)  # Smaller font for inset
+        inset_ax.tick_params(
+            axis="both",
+            labelsize=5,  # keep it small…
+            length=2,  # your existing tick length
+        )
 
         # Set more ticks on the x-axis
         inset_ax.xaxis.set_major_locator(plt.MaxNLocator(5))
         inset_ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+
+        import matplotlib.patheffects as pe
+
+        for lbl in inset_ax.get_xticklabels() + inset_ax.get_yticklabels():
+            # now give it a fine white outline so it pops off the markers
+            lbl.set_path_effects(
+                [
+                    pe.Stroke(linewidth=0.00005, foreground="black"),  # thin border
+                    pe.Normal(),
+                ]
+            )
 
     def _plot_inset_in_first_column_lower(self, ax_main, iteration_group, norm=None):
         """
@@ -9120,10 +11100,10 @@ class PlotIterations:
         # 1) Create the inset axes.
         inset_ax = inset_axes(
             ax_main,
-            width="40%",  # 40% of parent Axes' width
-            height="40%",  # 40% of parent Axes' height
+            width="33%",  # 40% of parent Axes' width
+            height="33%",  # 40% of parent Axes' height
             loc="upper right",  # Position of the inset
-            borderpad=2,
+            borderpad=0.5,
         )
 
         # 2) Determine which iterations to plot in the inset.
@@ -9235,11 +11215,22 @@ class PlotIterations:
         inset_ax.set_ylim(self.y_min_global, self.y_max_global)
 
         # 9) Customize inset appearance
-        inset_ax.tick_params(labelsize=6, length=2)  # Smaller font for inset  #
+        inset_ax.tick_params(labelsize=5, length=2)  # Smaller font for inset  #
 
         # Set more ticks on the x-axis
         inset_ax.xaxis.set_major_locator(plt.MaxNLocator(5))
         inset_ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+
+        import matplotlib.patheffects as pe
+
+        for lbl in inset_ax.get_xticklabels() + inset_ax.get_yticklabels():
+            # now give it a fine white outline so it pops off the markers
+            lbl.set_path_effects(
+                [
+                    pe.Stroke(linewidth=0.00005, foreground="black"),  # thin border
+                    pe.Normal(),
+                ]
+            )
 
     def _find_last_complete_iteration(self):
         """
@@ -9271,6 +11262,226 @@ class PlotIterations:
                 last_complete_it = it
 
         return last_complete_it
+
+    def compare_dataframes(
+        self,
+        df1,
+        df2,
+        df_likelihood=None,
+        df_likelihood2=None,
+        comparison_type="new",
+        verbose=1,
+        compare_context=None,
+    ):
+        """
+        Compare two DataFrames (df1, df2) to identify samples that are 'new', 'removed', or 'common',
+        while preserving one-to-one matching of duplicates. Also re-aligns likelihood data if provided.
+
+        Parameters
+        ----------
+        df1 : pd.DataFrame
+            The first DataFrame (e.g., the "current" iteration's data).
+        df2 : pd.DataFrame
+            The second DataFrame (e.g., the "previous" iteration's data).
+        df_likelihood : pd.DataFrame, optional
+            Likelihood rows aligned with df1 (same length, same row order as df1 BEFORE sorting).
+        df_likelihood2 : pd.DataFrame, optional
+            Likelihood rows aligned with df2 (same length, same row order as df2 BEFORE sorting).
+        comparison_type : {'new','removed','common'}, default='new'
+            - 'new': return rows in df1 that are not in df2.
+            - 'removed': return rows in df2 that are not in df1.
+            - 'common': return rows present in both df1 and df2.
+        verbose : int, optional
+            If >0, prints some debugging info.
+
+        Returns
+        -------
+        matched_params : pd.DataFrame
+            Subset of parameter rows that match the requested relationship,
+            extracted from the correct perspective (df1 or df2, or intersection).
+        matched_likelihood : pd.DataFrame or None
+            Subset of likelihood rows that align with matched_params. If none given,
+            returns None.
+        """
+
+        # --------------------------------------------------
+        # Step 1: Validate input parameters
+        # --------------------------------------------------
+        valid_types = ["new", "removed", "common"]
+        if comparison_type not in valid_types:
+            raise ValueError(
+                f"comparison_type must be one of {valid_types}, got: {comparison_type}"
+            )
+
+        # --------------------------------------------------
+        # Step 2: Handle edge cases (if df1 or df2 is empty)
+        # --------------------------------------------------
+        if df1 is None or df1.empty:
+            if verbose > 0:
+                print(
+                    f'\n[compare_dataframes] [{compare_context["context"]}] df1 ({compare_context["df1"]}) is empty; returning trivial result:\n {compare_context["msg1"]}'
+                )
+            if comparison_type == "removed" and df2 is not None:
+                return df2.copy().reset_index(drop=True), df_likelihood2
+            return None, None
+
+        if df2 is None or df2.empty:
+            if verbose > 0:
+                print(
+                    f'\n[compare_dataframes] [{compare_context["context"]}] df2 ({compare_context["df2"]}) is empty; returning trivial result:\n {compare_context["msg2"]}'
+                )
+            if comparison_type == "new":
+                return df1.copy().reset_index(drop=True), df_likelihood
+            return None, None
+
+        # --------------------------------------------------
+        # Step 2b: Ensure likelihood data and dataframes match in length
+        if df_likelihood is not None and len(df_likelihood) != len(df1):
+            raise ValueError(
+                f'\nLength mismatch: df_likelihood ({len(df_likelihood)}) and df1 ({compare_context["df1"]}) ({len(df1)}) are not equal.'
+            )
+        if df_likelihood2 is not None and len(df_likelihood2) != len(df2):
+            raise ValueError(
+                f'\nLength mismatch: df_likelihood2 ({len(df_likelihood2)}) and df2 ({compare_context["df2"]}) ({len(df2)}) are not equal.'
+            )
+
+        # --------------------------------------------------
+        # Step 3: Preprocess df1 (current iteration's data)
+        # --------------------------------------------------
+        df1 = df1.copy()
+        df1["_temp_idx1"] = df1.index  # Store original row index before sorting
+
+        # Identify the relevant parameter columns (excluding helper columns)
+        param_cols = [c for c in df1.columns if c not in ["_temp_idx1", "dup_id"]]
+
+        # Sort df1 so that identical samples appear together
+        df1_sorted = df1.sort_values(param_cols, kind="mergesort").reset_index(
+            drop=True
+        )
+
+        # Assign a 'dup_id' to each duplicate row so they can be matched one-to-one
+        df1_sorted["dup_id"] = df1_sorted.groupby(param_cols).cumcount()
+
+        # Reorder the likelihood data to match this new sorted order
+        df_likelihood_sorted = (
+            df_likelihood.iloc[df1_sorted["_temp_idx1"]].reset_index(drop=True)
+            if df_likelihood is not None
+            else None
+        )
+
+        # --------------------------------------------------
+        # Step 4: Preprocess df2 (previous iteration's data)
+        # --------------------------------------------------
+        df2 = df2.copy()
+        df2["_temp_idx2"] = df2.index
+
+        df2_sorted = df2.sort_values(param_cols, kind="mergesort").reset_index(
+            drop=True
+        )
+        df2_sorted["dup_id"] = df2_sorted.groupby(param_cols).cumcount()
+
+        df_likelihood2_sorted = (
+            df_likelihood2.iloc[df2_sorted["_temp_idx2"]].reset_index(drop=True)
+            if df_likelihood2 is not None
+            else None
+        )
+
+        # --------------------------------------------------
+        # Step 5: Perform Merge to Find Matches
+        # --------------------------------------------------
+        """
+        We now compare df1_sorted and df2_sorted to determine which samples belong to which category:
+        
+        - 'new': Samples in df1 but not in df2 (found using a LEFT JOIN)
+        - 'removed': Samples in df2 but not in df1 (found using a RIGHT JOIN)
+        - 'common': Samples that exist in both df1 and df2 (found using an INNER JOIN)
+
+        The 'merge' function combines both dataframes based on their common parameter columns + 'dup_id'.
+        This ensures that duplicate rows match correctly and one-to-one.
+        
+        The 'how' parameter controls which type of comparison we perform:
+        
+        - 'left' (for 'new'): Keeps all rows from df1_sorted, adds matches from df2_sorted.
+        - 'right' (for 'removed'): Keeps all rows from df2_sorted, adds matches from df1_sorted.
+        - 'inner' (for 'common'): Keeps only rows that exist in BOTH df1_sorted and df2_sorted.
+
+        The 'indicator=True' adds a new column `_merge`, which labels each row as:
+        - 'left_only'  → Present only in df1 (new sample)
+        - 'right_only' → Present only in df2 (removed sample)
+        - 'both'       → Present in both (common sample)
+        """
+        if comparison_type == "new":
+            merge_type = "left"
+            indicator = True
+        elif comparison_type == "removed":
+            merge_type = "right"
+            indicator = True
+        else:  # 'common'
+            merge_type = "inner"
+            indicator = False
+
+        merged = df1_sorted.merge(
+            df2_sorted,
+            on=param_cols + ["dup_id"],
+            how=merge_type,
+            indicator=indicator,
+            suffixes=("_df1", "_df2"),
+        )
+
+        # --------------------------------------------------
+        # Step 6: Extract the Matching Rows from the Merge
+        # --------------------------------------------------
+        """
+        Now that we have merged df1_sorted and df2_sorted, we extract the rows based on `_merge`:
+
+        - For 'new': We filter only rows labeled as 'left_only' (i.e., samples that appear in df1 but not df2).
+        - For 'removed': We filter only rows labeled as 'right_only' (samples in df2 but not df1).
+        - For 'common': We take all merged rows, since they exist in both dataframes.
+        """
+        if comparison_type == "new":
+            matched_df = merged[merged["_merge"] == "left_only"].drop(
+                columns=["_merge"]
+            )
+        elif comparison_type == "removed":
+            matched_df = merged[merged["_merge"] == "right_only"].drop(
+                columns=["_merge"]
+            )
+        else:  # 'common'
+            matched_df = merged
+
+        # Extract the original rows from df1 or df2
+        matched_params = (
+            df1.iloc[matched_df["_temp_idx1"]].copy()
+            if comparison_type != "removed"
+            else df2.iloc[matched_df["_temp_idx2"]].copy()
+        )
+
+        # Remove helper columns
+        matched_params.drop(
+            columns=["dup_id", "_temp_idx1", "_temp_idx2"],
+            inplace=True,
+            errors="ignore",
+        )
+        matched_params.reset_index(drop=True, inplace=True)
+
+        # --------------------------------------------------
+        # Step 7: Extract Aligned Likelihood Data
+        # --------------------------------------------------
+        matched_likelihood = None
+        if comparison_type in ["new", "common"] and df_likelihood_sorted is not None:
+            matched_likelihood = (
+                df_likelihood.iloc[matched_df["_temp_idx1"]]
+                .copy()
+                .reset_index(drop=True)
+            )
+        elif comparison_type == "removed" and df_likelihood2_sorted is not None:
+            matched_likelihood = (
+                df_likelihood2.iloc[matched_df["_temp_idx2"]]
+                .copy()
+                .reset_index(drop=True)
+            )
+
+        return matched_params, matched_likelihood
 
     class MulticolorHandler(HandlerBase):
         def __init__(self, colors, marker="o", markersize=8):
@@ -9531,6 +11742,11 @@ class TrianglePlot:
         colormap="tab10",
         save_params_loglkls=False,
         pickle_contour_data=None,
+        preferred_legend_position="upper right",
+        custom_axis_ranges=None,  # dict e.g. {'H0': (50,80), 'Ω_m':[0.1,1]}
+        log_scale_params=None,  # iterable/ set e.g. {'H0','Gamma_dcdm'}
+        custom_ticks=None,  # dict e.g. {'H0':[40,60,80], 'Ω_m':[.2,.4,.6]}
+        grid_vars=None,
         # Below: new contour-related arguments
         plot_contours=False,
         grid_size=1000,  # number of grid points along each axis
@@ -9548,7 +11764,7 @@ class TrianglePlot:
         marker_edge_lw=0.1,
         # NEW: Parameters for the threshold overlay:
         param_connect=None,  # New: pass in the object that holds delta_chi2_threshold
-        plot_threshold_line=True,
+        plot_threshold_line=False,
         delta_chi2_threshold_color="purple",
         delta_chi2_threshold_linewidth=2,
     ):
@@ -9617,6 +11833,26 @@ class TrianglePlot:
         self.data_types_to_plot = data_types_to_plot
         self.downsampling_fraction = downsampling_fraction
         self.colormap = colormap
+        self.preferred_legend_position = preferred_legend_position
+
+        self.custom_axis_ranges = custom_axis_ranges or {}
+
+        # Rewrite custom_axis_ranges to be a dict of tuples, if any of the values are lists
+        for key, val in list(self.custom_axis_ranges.items()):
+            if isinstance(val, (list, tuple)):
+                if len(val) != 2:
+                    raise ValueError(
+                        f"custom_axis_ranges['{key}'] must be 2-element sequence, got {val!r}"
+                    )
+                self.custom_axis_ranges[key] = (val[0], val[1])
+
+        if isinstance(log_scale_params, str):
+            self.log_scale_params = {log_scale_params}
+        else:
+            self.log_scale_params = set(log_scale_params or [])
+        self.custom_ticks = custom_ticks or {}
+
+        self.grid_vars = grid_vars
 
         # The main DataFrame used to plot points (accepted/discarded)
         self.df_long = pd.DataFrame()
@@ -9650,6 +11886,10 @@ class TrianglePlot:
         self.plot_threshold_line = plot_threshold_line
         self.delta_chi2_threshold_color = delta_chi2_threshold_color
         self.delta_chi2_threshold_linewidth = delta_chi2_threshold_linewidth
+        self.delta_chi2_threshold = getattr(
+            self.param_connect, "delta_chi2_threshold", None
+        )
+        self.delta_chi2_threshold = 4800  # test
 
         # Will store the arrays of (x_all, y_all, loglkl_all) for *all* param pairs,
         # but we only do the interpolation pair by pair.  We'll just keep the raw data:
@@ -9695,6 +11935,41 @@ class TrianglePlot:
 
         matplotlib.use("Agg")
 
+        # -- Basic figure styling
+        fontsize = 11
+        latex_preamble = r"\usepackage{siunitx} \usepackage{amsmath} \usepackage{amsfonts} \usepackage{amssymb} \usepackage{mathtools} \usepackage{bm} \usepackage{mathrsfs} \parindent=0pt"
+
+        if self.param_labels is not None:
+            # Use LaTeX for styling if param_labels is set
+            matplotlib.rcParams.update(
+                {
+                    "text.usetex": False,
+                    "font.family": "serif",
+                    "font.serif": "cmr10",
+                    "font.size": fontsize,
+                    "mathtext.fontset": "cm",
+                    "text.latex.preamble": latex_preamble,
+                }
+            )
+        else:
+            # Do not interpret underscores or other symbols as math text
+            matplotlib.rcParams.update(
+                {
+                    "text.usetex": False,  # Disable LaTeX
+                    "font.family": "serif",
+                    "font.serif": "cmr10",
+                    "font.size": fontsize,
+                    "mathtext.fontset": "dejavusans",  # Or another fontset that supports plain text
+                }
+            )
+
+        plt.rcParams["figure.dpi"] = 1000
+        plt.rcParams["savefig.dpi"] = 1000
+        matplotlib.rcParams["hatch.linewidth"] = 0.5
+        plt.rcParams["xtick.labelsize"] = 8
+        plt.rcParams["ytick.labelsize"] = 8
+        plt.rcParams["legend.fontsize"] = 8
+
         # 1) Find last complete iteration
         last_complete_it = self._find_last_complete_iteration()
         if self.verbose >= 3:
@@ -9717,7 +11992,9 @@ class TrianglePlot:
             print(f"Using iterations up to {last_complete_it}: {iters_to_use}")
 
         # 3) Build final snapshot DF: accepted vs. discarded
-        self.df_long = self._build_final_snapshot_df(iters_to_use, last_complete_it)
+        self.df_long = self._build_final_snapshot_df(
+            iters_to_use, last_complete_it, params=self.params_triangleplot
+        )
         if self.verbose >= 2:
             print(f"Final DataFrame shape: {self.df_long.shape}")
             print(
@@ -9749,6 +12026,13 @@ class TrianglePlot:
         if self.ignore_iteration_0_for_axis:
             param_limits = self._determine_axis_ranges(iters_to_use)
 
+        # default limits (from data) + user-overrides
+        combined_limits = {}
+        if param_limits is not None:
+            combined_limits.update(param_limits)
+        if self.custom_axis_ranges is not None:
+            combined_limits.update(self.custom_axis_ranges)
+
         # Decide which columns to plot
         meta_cols = [
             "iteration_origin",
@@ -9774,6 +12058,15 @@ class TrianglePlot:
         )
         self.df_long.sort_values("group_key", inplace=True)
 
+        # Set fixed figure size
+        textwidth = 440  # JCAP uses a textwidth of 440 pts
+        width = textwidth / 72.27
+        # height = width  # square figure
+        # pp.figure.set_size_inches(width, height)
+
+        n = len(plot_cols)
+        facet_size = width / n
+
         # 5) Create pairplot
         pp = sns.pairplot(
             data=self.df_long,
@@ -9784,26 +12077,33 @@ class TrianglePlot:
             markers=markers_dict,
             diag_kind=diag_kind,
             corner=corner,
+            height=facet_size,  # <— makes each subplot facet_size×facet_size
+            aspect=1,  # <— enforces 1:1 physical aspect
             plot_kws={
                 "s": self.marker_size,
                 "alpha": self.marker_alpha,
                 "edgecolor": "black",
                 "linewidth": self.marker_edge_lw,
             },  # Adjust size/alpha as needed
+            diag_kws={"cut": 0},
         )
+
+        # Set to zero white space between subplots
+        pp.figure.subplots_adjust(wspace=0, hspace=0)
+
+        # pp.fig.set_size_inches(width, width)
 
         # 6) (Optional) apply custom axis labels
         if self.param_labels:
-            self._apply_custom_axis_labels(pp, plot_cols)
+            self._apply_custom_axis_labels(pp, x_vars=plot_cols, y_vars=plot_cols)
 
         # Remove Seaborn’s default legend and create a custom one
         self.palette_dict = palette_dict
-        self._create_custom_legend(pp)
 
         self._customize_kde_styles(pp, hue_order)
 
         # 7) (Optional) fix axis ranges if ignoring iteration 0
-        if param_limits is not None:
+        if combined_limits is not None:
             num_vars = len(plot_cols)
             for i in range(num_vars):
                 for j in range(num_vars):
@@ -9812,16 +12112,127 @@ class TrianglePlot:
                         continue
                     param_x = plot_cols[j]
                     param_y = plot_cols[i]
-                    if param_x in param_limits:
-                        ax_ij.set_xlim(param_limits[param_x])
-                    if param_y in param_limits:
-                        ax_ij.set_ylim(param_limits[param_y])
+
+                    if param_x in combined_limits:
+                        ax_ij.set_xlim(combined_limits[param_x])  # <<< MOD >>>
+                    if param_y in combined_limits:
+                        ax_ij.set_ylim(combined_limits[param_y])  # <<< MOD >>>
+
+                    # ---------- log–scales ----------                    # <<< NEW >>>
+                    if param_x in self.log_scale_params:
+                        ax_ij.set_xscale("log")
+                    if param_y in self.log_scale_params:
+                        ax_ij.set_yscale("log")
+
+                    # ---------- custom ticks ----------                   # <<< NEW >>>
+                    if param_x in self.custom_ticks:
+                        ax_ij.set_xticks(self.custom_ticks[param_x])
+                    if param_y in self.custom_ticks:
+                        ax_ij.set_yticks(self.custom_ticks[param_y])
 
         # 8) If requested, plot the 2D \Delta \chi^2 contours on each subplot
         if self.plot_contours:
-            self._plot_contours_on_pairplot(pp, plot_cols, last_complete_it)
+            self._plot_contours_on_pairplot(
+                pp, plot_cols, plot_cols, last_complete_it, plot_mode="triangle"
+            )
 
-            # -- Basic figure styling
+        for ax in pp.axes.flatten():
+            if ax is None:
+                continue
+
+            # a+b) all four spines on, width=1.0
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_linewidth(1.0)
+
+            if ax.get_xscale() == ax.get_yscale() == "linear":
+                ax.ticklabel_format(style="sci", axis="both", scilimits=(-3, 3))
+
+            # c) ticks point in
+            # ax.tick_params(direction='in', top=True, right=True, labelsize=8) # Adjust
+
+            # 1) grab the built-in offset Text object
+            off = ax.yaxis.get_offset_text()
+            txt = off.get_text().strip()
+            # hide the default one
+            off.set_visible(False)
+
+            # if there was anything to show, place it yourself:
+            if txt:
+                # 2) find the top‐left corner of this Axes in figure coords
+                bb = ax.get_position()  # Bbox(x0, y0, x1, y1) in fig‐fraction
+                x_fig = bb.x0 - 0.005  # a hair to the left
+                y_fig = bb.y1 - 0.01  # a hair below
+
+                # 3) put it there
+                #    (ha='right' so it reads back into the plot, va='bottom' so it's just above)
+                pp.figure.text(
+                    x_fig,
+                    y_fig,
+                    txt,
+                    ha="right",
+                    va="bottom",
+                    transform=pp.figure.transFigure,
+                    fontsize=ax.yaxis.get_offset_text().get_fontsize(),
+                )
+
+        legend = self._create_custom_legend(pp)
+
+        # from matplotlib.patches import Rectangle
+
+        # # compute the extent of the grid in figure coords
+        # l, b, w, h = (
+        #     pp.figure.subplotpars.left,
+        #     pp.figure.subplotpars.bottom,
+        #     pp.figure.subplotpars.right - pp.figure.subplotpars.left,
+        #     pp.figure.subplotpars.top - pp.figure.subplotpars.bottom,
+        # )
+
+        # pp.figure.patches.append(
+        #     Rectangle(
+        #         (l, b),
+        #         w,
+        #         h,
+        #         transform=pp.figure.transFigure,
+        #         fill=False,
+        #         edgecolor="0.5",
+        #         linewidth=1,
+        #         linestyle="--",
+        #     )
+        # )
+
+        # 9) Save
+        os.makedirs(self.output_folder, exist_ok=True)
+        os.makedirs(os.path.join(self.output_folder, "pairplots"), exist_ok=True)
+        for fmt in self.save_formats:
+            filename = f"triangle_plot.{fmt}"
+            save_path = os.path.join(self.output_folder, "pairplots", filename)
+            pp.savefig(
+                save_path, dpi=1000, format=fmt, bbox_inches="tight"
+            )  # bbox_inches="tight"
+            if self.verbose >= 1:
+                print(f"Saved plot to {save_path}")
+
+    def plot_matrix(self, diag_kind="kde", corner=True, include_discarded=True):
+        """
+        Build the final-snapshot DataFrame and create the Seaborn pairplot.
+        If plot_contours=True, overlay delta-chi^2 contours on each subplot.
+
+        Parameters
+        ----------
+        diag_kind : str
+            'kde' or 'hist' for the diagonal subplots.
+        corner : bool
+            If True, only plot the lower triangle (and diagonal).
+        include_discarded : bool
+            If True, includes both accepted+discarded points. If False, accepted only.
+        """
+
+        matplotlib.rcParams.update(matplotlib.rcParamsDefault)
+
+        matplotlib.use("Agg")
+
+        # -- Basic figure styling
         fontsize = 11
         latex_preamble = r"\usepackage{siunitx} \usepackage{amsmath} \usepackage{amsfonts} \usepackage{amssymb} \usepackage{mathtools} \usepackage{bm} \usepackage{mathrsfs} \parindent=0pt"
 
@@ -9829,7 +12240,7 @@ class TrianglePlot:
             # Use LaTeX for styling if param_labels is set
             matplotlib.rcParams.update(
                 {
-                    "text.usetex": True,
+                    "text.usetex": False,
                     "font.family": "serif",
                     "font.serif": "cmr10",
                     "font.size": fontsize,
@@ -9849,17 +12260,272 @@ class TrianglePlot:
                 }
             )
 
-        plt.rcParams["figure.dpi"] = 1000
-        plt.rcParams["savefig.dpi"] = 1000
+        plt.rcParams["figure.dpi"] = 600
+        plt.rcParams["savefig.dpi"] = 600
         matplotlib.rcParams["hatch.linewidth"] = 0.5
+        plt.rcParams["xtick.labelsize"] = 8
+        plt.rcParams["ytick.labelsize"] = 8
+        plt.rcParams["legend.fontsize"] = 8
+
+        # 1) Find last complete iteration
+        last_complete_it = self._find_last_complete_iteration()
+        if self.verbose >= 3:
+            print(f"Last complete iteration: {last_complete_it}")
+        if last_complete_it is None:
+            print("No complete iterations found. Exiting.")
+            return
+
+        # 2) Determine which iterations to use
+        if self.iterations_to_plot == "all":
+            iters_to_use = sorted(
+                it for it in self.data["iteration_data"] if it <= last_complete_it
+            )
+        else:
+            iters_to_use = sorted(
+                it for it in self.iterations_to_plot if it <= last_complete_it
+            )
+
+        if self.verbose >= 2:
+            print(f"Using iterations up to {last_complete_it}: {iters_to_use}")
+
+        # 3) Build final snapshot DF: accepted vs. discarded
+        if self.grid_vars is None:
+            params = "all"
+        else:
+            if self.grid_vars["columns"] == "all":
+                params = "all"
+            else:
+                params = self.grid_vars["columns"] + self.grid_vars["rows"]
+                # Only unique params
+                params = list(set(params))
+
+        self.df_long = self._build_final_snapshot_df(
+            iters_to_use, last_complete_it, params=params
+        )
+        if self.verbose >= 2:
+            print(f"Final DataFrame shape: {self.df_long.shape}")
+            print(
+                f"Final group counts:\n{self.df_long['group_key'].value_counts(dropna=False)}"
+            )
+
+        if self.df_long.empty:
+            print("No data to plot after final snapshot filtering. Exiting.")
+            return
+
+        self._filter_data_types()
+
+        # Optionally drop discarded points
+        if not include_discarded:
+            self.df_long = self.df_long[self.df_long["status"] == "accepted"]
+            if self.df_long.empty:
+                print("No accepted data to plot. Exiting.")
+                return
+
+        # 6) Apply downsampling if requested
+        if self.downsampling_fraction > 0.0:
+            self._downsample_df_long()
+            if self.df_long.empty:
+                print("No data to plot after downsampling. Exiting.")
+                return
+
+        # If ignoring iteration 0 data for axis range, figure out param limits
+        param_limits = None
+        if self.ignore_iteration_0_for_axis:
+            param_limits = self._determine_axis_ranges(iters_to_use)
+
+        # default limits (from data) + user-overrides
+        combined_limits = {}
+        if param_limits is not None:
+            combined_limits.update(param_limits)
+        if self.custom_axis_ranges is not None:
+            combined_limits.update(self.custom_axis_ranges)
+
+        # Decide which columns to plot
+        meta_cols = [
+            "iteration_origin",
+            "iteration_discard",
+            "discard_reason",
+            "status",
+            "group_key",
+        ]
+
+        if self.grid_vars is not None:
+            x_vars = self.grid_vars["columns"]
+            if x_vars == "all":
+                x_vars = [c for c in self.df_long.columns if c not in meta_cols]
+            y_vars = self.grid_vars["rows"]
+
+            if not x_vars or not y_vars:
+                print("No variables to plot. Exiting.")
+                return
+
+        # 4) Prepare palette + markers
+        hue_col = "group_key"
+        palette_dict, markers_dict, hue_order = self._make_custom_palette_and_markers()
+
+        # Convert group_key to Categorical with a defined order
+        self.df_long["group_key"] = pd.Categorical(
+            self.df_long["group_key"], categories=hue_order, ordered=True
+        )
+        self.df_long.sort_values("group_key", inplace=True)
+
+        # Set fixed figure size
+        textwidth = 440  # JCAP uses a textwidth of 440 pts
+        width = textwidth / 72.27
+        # height = width  # square figure
+        # pp.figure.set_size_inches(width, height)
+
+        n = len(x_vars)
+        facet_size = width / n
+
+        # 5) Create pairplot
+        pp = sns.pairplot(
+            data=self.df_long,
+            hue=hue_col,
+            hue_order=hue_order[::-1],  # reverse or not, up to you
+            # vars=plot_cols,
+            x_vars=x_vars,
+            y_vars=y_vars,
+            palette=palette_dict,
+            markers=markers_dict,
+            diag_kind=diag_kind,
+            # corner=corner,
+            height=facet_size,  # <— makes each subplot facet_size×facet_size
+            aspect=1,  # <— enforces 1:1 physical aspect
+            plot_kws={
+                "s": self.marker_size,
+                "alpha": self.marker_alpha,
+                "edgecolor": "black",
+                "linewidth": self.marker_edge_lw,
+            },  # Adjust size/alpha as needed
+            diag_kws={"cut": 0},
+        )
+
+        # Set to zero white space between subplots
+        pp.figure.subplots_adjust(wspace=0, hspace=0)
+
+        # pp.fig.set_size_inches(width, width)
+
+        # 6) (Optional) apply custom axis labels
+        if self.param_labels:
+
+            self._apply_custom_axis_labels(pp, x_vars, y_vars)
+
+        # Remove Seaborn’s default legend and create a custom one
+        self.palette_dict = palette_dict
+
+        self._customize_kde_styles(pp, hue_order)
+
+        # 7) (Optional) fix axis ranges if ignoring iteration 0
+        if combined_limits is not None:
+            for i in range(len(y_vars)):
+                for j in range(len(x_vars)):
+                    ax_ij = pp.axes[i, j]
+                    if ax_ij is None:
+                        continue
+                    param_x = x_vars[j]
+                    param_y = y_vars[i]
+
+                    if param_x in combined_limits:
+                        ax_ij.set_xlim(combined_limits[param_x])  # <<< MOD >>>
+                    if param_y in combined_limits:
+                        ax_ij.set_ylim(combined_limits[param_y])  # <<< MOD >>>
+
+                    # --------- log–scales ----------                    # <<< NEW >>>
+                    if param_x in self.log_scale_params:
+                        ax_ij.set_xscale("log")
+                    if param_y in self.log_scale_params:
+                        ax_ij.set_yscale("log")
+
+                    # ---------- custom ticks ----------                   # <<< NEW >>>
+                    if param_x in self.custom_ticks:
+                        ax_ij.set_xticks(self.custom_ticks[param_x])
+                    if param_y in self.custom_ticks:
+                        ax_ij.set_yticks(self.custom_ticks[param_y])
+
+        # 8) If requested, plot the 2D \Delta \chi^2 contours on each subplot
+        if self.plot_contours:
+            self._plot_contours_on_pairplot(
+                pp, x_vars, y_vars, last_complete_it, plot_mode="matrix"
+            )
+
+        for ax in pp.axes.flatten():
+            if ax is None:
+                continue
+
+            # a+b) all four spines on, width=1.0
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_linewidth(1.0)
+
+            if ax.get_xscale() == ax.get_yscale() == "linear":
+                ax.ticklabel_format(style="sci", axis="both", scilimits=(-3, 3))
+
+            # c) ticks point in
+            # ax.tick_params(direction='in', top=True, right=True, labelsize=8) # Adjust
+
+            # 1) grab the built-in offset Text object
+            off = ax.yaxis.get_offset_text()
+            txt = off.get_text().strip()
+            # hide the default one
+            off.set_visible(False)
+
+            # if there was anything to show, place it yourself:
+            # And ax is the first column (most left):
+            if txt and ax.get_subplotspec().colspan.start == 0:
+                # 2) find the top‐left corner of this Axes in figure coords
+                bb = ax.get_position()  # Bbox(x0, y0, x1, y1) in fig‐fraction
+                x_fig = bb.x0 - 0.005  # a hair to the left
+                y_fig = bb.y1 - 0.01  # a hair below
+
+                # 3) put it there
+                #    (ha='right' so it reads back into the plot, va='bottom' so it's just above)
+                pp.figure.text(
+                    x_fig,
+                    y_fig,
+                    txt,
+                    ha="right",
+                    va="bottom",
+                    transform=pp.figure.transFigure,
+                    fontsize=ax.yaxis.get_offset_text().get_fontsize(),
+                )
+
+        self.preferred_legend_position = "center"
+
+        legend = self._create_custom_legend(pp)
+
+        # from matplotlib.patches import Rectangle
+
+        # # compute the extent of the grid in figure coords
+        # l, b, w, h = (
+        #     pp.figure.subplotpars.left,
+        #     pp.figure.subplotpars.bottom,
+        #     pp.figure.subplotpars.right - pp.figure.subplotpars.left,
+        #     pp.figure.subplotpars.top - pp.figure.subplotpars.bottom,
+        # )
+
+        # pp.figure.patches.append(
+        #     Rectangle(
+        #         (l, b),
+        #         w,
+        #         h,
+        #         transform=pp.figure.transFigure,
+        #         fill=False,
+        #         edgecolor="0.5",
+        #         linewidth=1,
+        #         linestyle="--",
+        #     )
+        # )
 
         # 9) Save
         os.makedirs(self.output_folder, exist_ok=True)
-        os.makedirs(os.path.join(self.output_folder, "triangle_plots"), exist_ok=True)
+        os.makedirs(os.path.join(self.output_folder, "pairplots"), exist_ok=True)
         for fmt in self.save_formats:
-            filename = f"triangle_plot.{fmt}"
-            save_path = os.path.join(self.output_folder, "triangle_plots", filename)
-            pp.savefig(save_path, dpi=1000, format=fmt, bbox_inches="tight")
+            filename = f"grid_plot.{fmt}"
+            save_path = os.path.join(self.output_folder, "pairplots", filename)
+            pp.savefig(
+                save_path, dpi=600, format=fmt, bbox_inches="tight"
+            )  # bbox_inches="tight"
             if self.verbose >= 1:
                 print(f"Saved plot to {save_path}")
 
@@ -9913,7 +12579,7 @@ class TrianglePlot:
 
         return last_complete_it
 
-    def _build_final_snapshot_df(self, iters_to_use, last_complete_it):
+    def _build_final_snapshot_df(self, iters_to_use, last_complete_it, params):
         """
         Creates a long-form DataFrame with final snapshot data:
         - still accepted points at final iteration range
@@ -9940,12 +12606,12 @@ class TrianglePlot:
             "group_key",
         ]
 
-        if self.params_triangleplot == "all":
+        if params == "all":
             # Take everything that’s not a meta col
             candidate_cols = [c for c in df_full.columns if c not in meta_cols]
         else:
             # Use only user-specified columns
-            candidate_cols = list(self.params_triangleplot)
+            candidate_cols = params
 
         if not candidate_cols:
             if self.verbose:
@@ -10309,235 +12975,398 @@ class TrianglePlot:
 
     def _create_custom_legend(self, pp):
         """
-        Remove the default pairplot legend and create a custom
-        multi-row legend with each iteration in a fixed column.
-
-        Rows:
-        1) Row of iteration labels (i=0, i=1, i=2, etc.)
-        2) Accepted (colored circles)
-        3) Discarded-likelihood (gray circles)
-        4) Discarded-oversampling (gray squares)
-        5) Discarded-iteration (gray triangles)
-
-        If a given status does not appear for iteration i,
-        we insert an invisible placeholder so the columns still line up.
+        Fully manual legend in its own inset Axes.
+        - dynamic col spacing to avoid overlap
+        - separate fixed text gap
+        - proper rounded gray frame
         """
-        # 1) Remove Seaborn's default legend
-        if pp._legend is not None:
+        fig = pp.fig
+
+        # 1) remove Seaborn's built-in legend
+        if getattr(pp, "_legend", None):
             pp._legend.remove()
 
-        # Figure out the union of all iteration numbers, across all statuses
-        all_iterations = set()
+        # 2) finalize draw so we can measure text widths
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
 
-        # status_to_itercolor = { "accepted": {it: color, ...},
-        #                         "discarded_likelihood": {it: color, ...}, etc. }
-        status_to_itercolor = {
+        # 3) collect iteration numbers & colors
+        all_iters = set()
+        status_to_color = {
             "accepted": {},
             "discarded_likelihood": {},
             "discarded_oversampling": {},
             "discarded_iteration": {},
         }
 
-        def parse_group(gk):
-            """
-            group_key example: 'accepted__it=3' or 'discarded_likelihood__it=2'
-            returns (status, it) or (None, None) if unrecognized.
-            """
+        def _parse(gk):
             if gk.startswith("accepted__it="):
-                status = "accepted"
-                it = int(gk.split("accepted__it=")[1])
-            elif gk.startswith("discarded_likelihood__it="):
-                status = "discarded_likelihood"
-                it = int(gk.split("discarded_likelihood__it=")[1])
-            elif gk.startswith("discarded_oversampling__it="):
-                status = "discarded_oversampling"
-                it = int(gk.split("discarded_oversampling__it=")[1])
-            elif gk.startswith("discarded_iteration__it="):
-                status = "discarded_iteration"
-                it = int(gk.split("discarded_iteration__it=")[1])
-            else:
-                return None, None
-            return status, it
+                return "accepted", int(gk.split("=")[1])
+            for key in (
+                "discarded_likelihood",
+                "discarded_oversampling",
+                "discarded_iteration",
+            ):
+                if gk.startswith(f"{key}__it="):
+                    return key, int(gk.split("=")[1])
+            return None, None
 
-        # 2) Build that nested dictionary from palette_dict
-        for gk, color in self.palette_dict.items():
-            status, iteration = parse_group(gk)
-            if status is None:
-                continue
-            all_iterations.add(iteration)
-            status_to_itercolor[status][iteration] = color
+        for gk, col in self.palette_dict.items():
+            st, it = _parse(gk)
+            if st is not None:
+                all_iters.add(it)
+                status_to_color[st][it] = col
 
-        # 3) Sort the iteration list
-        iteration_list = sorted(all_iterations)
+        iteration_list = sorted(all_iters)
+        ncols = len(iteration_list) + 1  # +1 for the "Style" column
 
-        # Compute dynamic fontsize and markersize based on figure size and number of iterations
-        fig = pp.fig
-        fig_width, fig_height = fig.get_size_inches()
-        n_iters = len(iteration_list)
-
-        base_height = 5.0
-        # Define base sizes
-        base_fontsize = 7
-        base_markersize = 6
-
-        # scaling_factor = 1 + (fig_height-base_height)/fig_height
-
-        scaling_factor = 1 + (fig_height - base_height) * (97.5 - fig_height) / 1500
-
-        # Calculate dynamic sizes
-        dynamic_fontsize = base_fontsize * scaling_factor
-        dynamic_markersize = base_markersize * scaling_factor
-
-        # We won't build a row at all if a status never appears in the data.
-        # But we'll always build iteration row if iteration_list is not empty.
-
-        ###################################################################
-        # Build the custom legend entries
-        ###################################################################
-        handles = []
-        labels = []
-        handler_map = {}
-
-        # A) Row 1 => iteration label row
-        #    e.g. "i=0   i=1   i=2   i=3" left to right
+        # 4) determine which rows to draw
+        rows = []
         if iteration_list:
-            handle_iter = object()  # dummy
-            label_iter = ""  # could say "Iterations"
-            handles.append(handle_iter)
-            labels.append(label_iter)
+            rows.append(("header", None))
+        for st, marker in (
+            ("accepted", "o"),
+            ("discarded_likelihood", "o"),
+            ("discarded_oversampling", "s"),
+            ("discarded_iteration", "^"),
+        ):
+            if status_to_color[st]:
+                rows.append((st, (self._get_status_label(st), marker)))
+        nrows = len(rows)
 
-            iter_handler = TrianglePlot.IterationLabelHandler(
-                iterations=iteration_list, spacing=1, fontsize=dynamic_fontsize
-            )
-            handler_map[handle_iter] = iter_handler
+        # 5) sizing constants (in points)
+        fs = 8  # font‐size
+        ms = 7  # marker‐size
+        gap_text = 1.75 * fs  # gap before category label
+        bdp = 0.5 * fs  # border‐pad inside frame
+        col_gap = 0.3 * fs  # <-- updated col_gap
+        row_ht = 1.9 * fs  # row height
+        fp = FontProperties(size=fs)
 
-        # Helper to build the color list (one color per iteration, placeholders for missing)
-        def build_color_list(status):
-            """
-            Return a list of length len(iteration_list).
-            If status_to_itercolor[status] has a color for iteration i, use it;
-            else use invisible placeholder color (1,1,1,0).
-            """
-            color_list = []
-            # A fully transparent RGBA
-            placeholder = (1, 1, 1, 0)
-            for it in iteration_list:
-                if it in status_to_itercolor[status]:
-                    color_list.append(status_to_itercolor[status][it])
-                else:
-                    color_list.append(placeholder)
-            return color_list
+        # 6) measure maximum width of any iteration‐label "i=k"
+        max_i_w = 0.0
+        for it in iteration_list:
 
-        # Another helper to actually add each row
-        def add_status_row(status, marker, legend_label):
-            # If a status never had ANY iteration in the data, skip
-            if len(status_to_itercolor[status]) == 0:
-                return
-            if not iteration_list:
-                return
-
-            # Build color list with placeholders
-            color_list = build_color_list(status)
-
-            handle_dummy = object()
-            handles.append(handle_dummy)
-            labels.append(legend_label)
-
-            handler_map[handle_dummy] = TrianglePlot.MultiColorHandler(
-                colors=color_list,
-                marker=marker,
-                markersize=dynamic_markersize,
-                spacing=1,
+            # 1) query the raw pixel‐width
+            w_px, _, _ = renderer.get_text_width_height_descent(
+                f"i={it}", fp, ismath=False
             )
 
-        # B) Row 2 => Accepted (colored circles)
-        hue_order = pp._hue_order
-        likelihood_filter_applied = any(
-            "discarded_likelihood" in group for group in hue_order
-        )
+            # 2) convert pixels → points (there are 72 points in an inch):
+            w_pt = w_px * (72.0 / fig.dpi)
 
-        add_status_row(
-            "accepted",
-            "o",
-            "Accepted (remaining)" if likelihood_filter_applied else "Accepted",
-        )
+            max_i_w = max(max_i_w, w_pt)
 
-        # C) Row 3 => Discarded-likelihood (gray circles)
-        add_status_row("discarded_likelihood", "o", "Discarded (likelihood-filter)")
+        w_px, _, _ = renderer.get_text_width_height_descent("Style", fp, ismath=False)
+        w_pt = w_px * (72.0 / fig.dpi)
+        max_i_w = max(max_i_w, w_pt)
 
-        # D) Row 4 => Discarded-oversampling (gray squares)
-        add_status_row("discarded_oversampling", "s", "Discarded (oversampling-filter)")
+        # 7) dynamic column spacing: large enough for text or marker + 0.3em
+        col_width = max(max_i_w, ms) + col_gap
 
-        # E) Row 5 => Discarded-iteration (gray triangles)
-        add_status_row("discarded_iteration", "^", "Discarded (entire iteration)")
+        # 8) measure maximum category‐label width
+        # max_lab_w = 0.0
+        # for ridx, (st, info) in enumerate(rows):
+        #     if st == "header":
+        #         continue
+        #     lab, _ = info
+        #     w, _, _ = renderer.get_text_width_height_descent(lab, fp, ismath=False)
+        #     max_lab_w = max(max_lab_w, w)
 
-        # Finally create a single legend
-        fig = pp.fig
-        # loc='upper center' or 'center left' or 'right', etc.
+        max_lab_w = 0.0
+        for ridx, (st, info) in enumerate(rows):
+            if st == "header":
+                continue
+            lab, _ = info
+            w_px, _, _ = renderer.get_text_width_height_descent(lab, fp, ismath=False)
+            w_pt = w_px * (72.0 / fig.dpi)  # <-- convert pixels → points
+            max_lab_w = max(max_lab_w, w_pt)
 
+        # 9) total legend size in points
+        total_w = 2 * bdp + ncols * col_width + gap_text + max_lab_w
+        total_h = 2 * bdp + nrows * row_ht
+
+        # 10) convert to figure fraction
+        fig_w, fig_h = fig.get_size_inches()
+        fw = total_w / (72 * fig_w)
+        fh = total_h / (72 * fig_h)
+
+        # anchor legend just above the top of the axes‐grid
+        # left_f, right_f = fig.subplotpars.left, fig.subplotpars.right
+        # cx = 0.5 * (left_f + right_f)
+        # topt = fig.subplotpars.top  # ← use the top of the axes region
+        # llx = cx - 0.5 * fw
+        # lly = topt - fh
+
+        # Draw figure
+
+        pp.figure.canvas.draw()
+
+        import matplotlib.transforms as mtrans
+
+        # Find all active axes (not None)
+        live_axes = [ax for row in pp.axes for ax in row if ax is not None]
+
+        # Union their positions in figure-fraction units
+        axes_box = mtrans.Bbox.union([ax.get_position() for ax in live_axes])
+
+        # Compute horizontal center of actual plot grid
+        cx = 0.5 * (axes_box.x0 + axes_box.x1)
+        topy = axes_box.y1 + 0.01  # place slightly above the top
+
+        # Legend lower-left corner:
+        llx = cx - 0.5 * fw
+        lly = topy
+
+        # 12) inset axes for the legend
+        ax = fig.add_axes([llx, lly, fw, fh])
+        ax.axis("off")
+        ax.set_facecolor("none")
+        ax.patch.set_visible(False)
+
+        # 14) precompute normalized positions
+        def fx(pt):
+            return pt / total_w
+
+        centers = [fx(bdp + (i + 0.5) * col_width) for i in range(ncols)]
+        style_c = centers[-1]
+        label_x = fx(bdp + ncols * col_width + gap_text)
+        ys = [(bdp + (nrows - i - 0.5) * row_ht) / total_h for i in range(nrows)]
+
+        # 15) draw each row’s icons + text
+        for ridx, (st, info) in enumerate(rows):
+            y = ys[ridx]
+            if st == "header":
+                # iteration labels + “Style”
+                for i, it in enumerate(iteration_list):
+                    ax.text(
+                        centers[i],
+                        y,
+                        f"i={it}",
+                        ha="center",
+                        va="center",
+                        fontsize=fs,
+                        transform=ax.transAxes,
+                    )
+                ax.text(
+                    style_c,
+                    y,
+                    " Style",
+                    ha="center",
+                    va="center",
+                    fontsize=fs,
+                    transform=ax.transAxes,
+                )
+            else:
+                lab, mk = info
+                # a) colored markers
+                for i, it in enumerate(iteration_list):
+                    col = status_to_color[st].get(it, (1, 1, 1, 0))
+                    ax.plot(
+                        [centers[i]],
+                        [y],
+                        marker=mk,
+                        markersize=ms,
+                        markerfacecolor=col,
+                        markeredgecolor=col,
+                        linestyle="",
+                        transform=ax.transAxes,
+                    )
+                # b) style line
+                ls = self.kde_styles[st]["linestyle"]
+                half = ms / total_w
+                ax.plot(
+                    [style_c - half, style_c + half],
+                    [y, y],
+                    linestyle=ls,
+                    color=("tab:blue" if st == "accepted" else "gray"),
+                    linewidth=1.5,
+                    transform=ax.transAxes,
+                )
+                # c) category label
+                ax.text(
+                    label_x,
+                    y,
+                    lab,
+                    ha="left",
+                    va="center",
+                    fontsize=fs + 1,
+                    transform=ax.transAxes,
+                )
+
+        fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
-        estimated_xwidth = iter_handler.get_xwidth(renderer)
-        required_handlelength = (
-            estimated_xwidth / (dynamic_fontsize + 1) + 4 / (len(iteration_list))
-            if len(iteration_list) < 5
-            else estimated_xwidth / (dynamic_fontsize + 1)
+
+        #  17) collect all content bboxes (in *display* coords)
+        bboxes = []
+        for artist in ax.texts + ax.lines:
+            try:
+                bb = artist.get_window_extent(renderer)
+                if bb.width > 0 and bb.height > 0:
+                    bboxes.append(bb)
+            except Exception:
+                pass
+
+        if bboxes:
+            #  18) union them
+            content_bb = Bbox.union(bboxes)
+
+            #  19) pad in *points* → *pixels*
+            pad_pts = bdp  # your borderpad in points
+            pad_px = pad_pts * fig.dpi / 72.0
+            pad_px = 0
+            padded = Bbox.from_bounds(
+                content_bb.x0 - pad_px,
+                content_bb.y0 - pad_px,
+                content_bb.width + 2 * pad_px,
+                content_bb.height + 2 * pad_px,
+            )
+
+            #  20) convert to *figure* fractional coords
+            inv_fig = fig.transFigure.inverted()
+            (x0, y0), (x1, y1) = inv_fig.transform(
+                [
+                    (padded.x0, padded.y0),
+                    (padded.x1, padded.y1),
+                ]
+            )
+            w_fig, h_fig = x1 - x0, y1 - y0
+
+            pad_frac = bdp / total_w
+
+            #  21) draw the tight patch on the *figure*
+            tight_box = FancyBboxPatch(
+                (x0, y0),
+                w_fig,
+                h_fig,
+                boxstyle=f"round,pad={pad_frac:.3f}",  # pad=0 because we already padded manually
+                facecolor="white",
+                edgecolor="0.6",
+                linewidth=1.2,
+                alpha=0.9,
+                transform=fig.transFigure,
+                zorder=-2,
+            )
+            fig.patches.append(tight_box)
+
+            # Check if the bottom of the legend frame is below the top of the top row of subplots
+            # If so, move the legend frame up above the top row of subplots, so it doesn't overlap.
+            # It should be placed a bit above the top of the figure.
+
+            margin_y = 0.025  # Adjust this value to control the distance from the top of the figure
+            # calculate position of lower frame-edge
+            lower_frame_edge = y0 - pad_frac
+            topy = fig.subplotpars.top
+            if lower_frame_edge < topy + margin_y:
+                # Move the legend frame up and the tight_box up
+                delta_y = topy + margin_y - lower_frame_edge
+                # Move the legend frame up
+                new_y0 = y0 + delta_y
+                new_lly = lly + delta_y
+
+                ax.set_position([llx, new_lly, fw, fh])
+                tight_box.set_y(new_y0)
+
+        def _legend_fits_upper_triangle(pp, fw, fh, margin=0.005):
+            """
+            Check whether a box of width=fw and height=fh (in figure-fraction units)
+            will fit into the “empty” upper-right triangle slot of a PairGrid,
+            and if so return (True, llx, lly) giving the lower-left corner
+            in figure-fraction coords, flush against the right and top of that cell.
+
+            pp       : your seaborn.PairGrid object
+            fw, fh   : legend width & height in figure fraction (0–1)
+            margin   : small gap from the subplot spines, also in figure fraction
+            """
+            fig = pp.fig
+            # grab the diagonal cell in the top row:
+            # pp.axes is an n×n array; the 0,0 entry is the upper-left corner cell.
+            diag = pp.axes[0, 0].get_position()
+
+            # horizontal free region runs from right edge of diag cell + margin
+            # up to the right edge of the entire grid (subplotpars.right − margin)
+            x0_free = diag.x1 + margin
+            x1_free = fig.subplotpars.right - margin
+            avail_width = x1_free - x0_free
+
+            # vertical free region runs from just below the top of the figure
+            # (subplotpars.top − margin) down to diag.x1 − fh minus our margin
+            # (so that the legend box of height fh just sits inside that band)
+
+            y0_free = diag.y0 + margin  # just above the bottom of the diag cell
+            y1_free = fig.subplotpars.top - margin  # just below the top of the figure
+            avail_height = y1_free - y0_free
+
+            if (fw <= avail_width) and (fh <= avail_height):
+                # flush it against the right and top of that free cell:
+                llx = x1_free - fw
+                lly = diag.y1 - fh - margin
+                return True, llx, lly
+            else:
+                return False, None, None
+
+        fits, tri_llx, tri_lly = _legend_fits_upper_triangle(
+            pp, w_fig + pad_frac, h_fig + pad_frac, margin=0.005
         )
+        # also check that countour plots are not drawn, because then it draws a colorbar in the corner
+        if (
+            fits
+            and not self.plot_contours
+            and self.preferred_legend_position == "upper right"
+        ):
+            sp = fig.subplotpars
+            margin = 0
+            # compute a lower‐left that *flushes right* at sp.right – margin
+            new_x0 = sp.right - margin - w_fig - pad_frac
+            new_y0 = sp.top - margin - h_fig - pad_frac
 
-        fig.legend(
-            handles,
-            labels,
-            handler_map=handler_map,
-            loc="upper center",
-            ncol=1,  # each row is separate
-            bbox_to_anchor=(0.6, 0.98),  # (horiz, vert)
-            frameon=True,
-            fontsize=dynamic_fontsize + 1,  # This fontzise is for the legend labels
-            # Below are the key adjustments to fix overlap:
-            handlelength=required_handlelength,
-            # handlelength,   # Increase the horizontal space allocated for the "handle"
-            handletextpad=0.5,
-            # handlepad,  # Gap between the handle area and the text
-            labelspacing=1.0,  # Vertical spacing between rows
-        )
+            shift_x = new_x0 - x0
+            shift_y = new_y0 - y0
 
-    def _apply_custom_axis_labels(self, pp, plot_cols):
+            new_llx = llx + shift_x
+            new_lly = lly + shift_y
+
+            # 2) move the inset‐axes
+            ax.set_position([new_llx, new_lly, fw, fh])
+
+            # 3) move the patch itself
+            tight_box.set_x(new_x0)
+            tight_box.set_y(new_y0)
+
+        return None
+
+    def _apply_custom_axis_labels(self, pp, x_vars, y_vars):
         """
-        Loop over each row/column in the PairGrid and set x/y labels
-        using self.param_labels if defined.
-        Otherwise, use the original column name.
+        Label the bottom row with x_vars and the leftmost column with y_vars.
+        Can handle both square corner‐plots (x_vars == y_vars) and rectangular grids.
         """
-        # pairplot creates a grid of Axes in pp.axes (a 2D array)
-        # The diagonal subplots label both x and y with the same column name,
-        # off-diagonal subplots only label x or y as appropriate.
+        # set "text.usetex" to True for LaTeX rendering
+        plt.rcParams["text.usetex"] = True
 
-        # If corner=True, you'll have a triangular structure; if corner=False, you have a full matrix.
+        n_rows = len(y_vars)
+        n_cols = len(x_vars)
 
-        num_vars = len(plot_cols)
-
-        # We'll do a double loop: row index i, col index j
-        # and set the labels on the bottom axes for x-label, the left axes for y-label, etc.
-        # Seaborn often sets each row's left label and each column's bottom label,
-        # but we can forcibly override them for clarity.
-        for i in range(num_vars):
-            for j in range(num_vars):
-                ax = pp.axes[i, j]
-                col_name_x = plot_cols[j]  # column name for x dimension
-                col_name_y = plot_cols[i]  # column name for y dimension
-
-                # If corner=True, some ax might be None (upper tri is hidden).
+        for i in range(n_rows):
+            for j in range(n_cols):
+                ax = pp.axes[i][j]
                 if ax is None:
                     continue
 
-                # X-label only on the bottom row
-                if i == num_vars - 1:
-                    # If we have a latex label, use it
-                    x_label = self.param_labels.get(col_name_x, col_name_x)
-                    ax.set_xlabel(x_label, fontsize=9)
+                # Only label x on the bottom row
+                if i == n_rows - 1:
+                    name = x_vars[j]
+                    label = (
+                        self.param_labels.get(name, name) if self.param_labels else name
+                    )
+                    ax.set_xlabel(label, fontsize=11)
 
-                # Y-label only on the leftmost column
+                # Only label y on the first column
                 if j == 0:
-                    y_label = self.param_labels.get(col_name_y, col_name_y)
-                    ax.set_ylabel(y_label, fontsize=9)
+                    name = y_vars[i]
+                    label = (
+                        self.param_labels.get(name, name) if self.param_labels else name
+                    )
+                    ax.set_ylabel(label, fontsize=11)
 
     def _determine_axis_ranges(self, iters_to_use):
         """
@@ -10626,9 +13455,9 @@ class TrianglePlot:
         """
         label_map = {
             "accepted": "Accepted",
-            "discarded_likelihood": "Discarded (likelihood-filter)",
-            "discarded_oversampling": "Discarded (oversampling-filter)",
-            "discarded_iteration": "Discarded (entire iteration)",
+            "discarded_likelihood": "Discarded (likelihood)",
+            "discarded_oversampling": "Discarded (oversampling)",
+            "discarded_iteration": "Discarded (iteration)",
             # Add more mappings if necessary
         }
         return label_map.get(status, status.replace("_", " ").capitalize())
@@ -10705,7 +13534,7 @@ class TrianglePlot:
                 poly.set_edgecolor(assigned_color)
 
                 # Ensure line width is visible
-                poly.set_linewidth(1.0)
+                poly.set_linewidth(2.5)
 
                 if self.verbose >= 2:
                     print(
@@ -10742,7 +13571,7 @@ class TrianglePlot:
                             [0],
                             color=rep_color,
                             linestyle=style["linestyle"],
-                            lw=1.5,
+                            lw=1.3,
                             label=label,
                         )
                     )
@@ -10753,15 +13582,15 @@ class TrianglePlot:
                 if first_diag_ax.get_legend() is not None:
                     first_diag_ax.legend_.remove()
 
-                # Add the new line-style legend
-                first_diag_ax.legend(
-                    handles=legend_elements,
-                    loc="upper left",  # Adjust as needed
-                    frameon=True,
-                    fontsize=7,
-                    title="Line Styles",
-                    title_fontsize=7,
-                )
+                # # Add the new line-style legend
+                # first_diag_ax.legend(
+                #     handles=legend_elements,
+                #     loc="upper left",  # Adjust as needed
+                #     frameon=True,
+                #     fontsize=7,
+                #     title="Line Styles",
+                #     title_fontsize=7,
+                # )
 
     def _filter_data_types(self):
         """
@@ -10871,7 +13700,9 @@ class TrianglePlot:
     # Contour-related methods
     ############################################################################
 
-    def _plot_contours_on_pairplot(self, pp, plot_cols, last_complete_it):
+    def _plot_contours_on_pairplot(
+        self, pp, x_vars, y_vars, last_complete_it, plot_mode
+    ):
         """
         Main driver for computing and drawing Delta chi^2 contours
         in each pair of parameters sub-axes.
@@ -10911,14 +13742,15 @@ class TrianglePlot:
 
         fig = pp.fig
         axes = pp.axes
-        num_vars = len(plot_cols)
+        n_rows = len(y_vars)
+        n_cols = len(x_vars)
 
         # We'll keep track of the first QuadContourSet for a single colorbar
         self.first_contour_set = None
 
         # Loop over the lower-triangle subplots (for corner=True) or all subplots (corner=False)
-        for i in range(num_vars):
-            for j in range(num_vars):
+        for i in range(n_rows):
+            for j in range(n_cols):
                 ax_ij = axes[i, j]
                 # If corner=True, the upper triangle is None.  If not corner,
                 # we might want to skip i < j or i>j.  Typically, the main data is in i>=j if corner=True.
@@ -10927,8 +13759,8 @@ class TrianglePlot:
                 if i == j:
                     continue  # skip diagonal
 
-                param_y = plot_cols[i]
-                param_x = plot_cols[j]
+                param_y = y_vars[i]
+                param_x = x_vars[j]
 
                 # 1) Extract the subset that has param_x and param_y
                 if param_x not in param_names or param_y not in param_names:
@@ -11002,52 +13834,90 @@ class TrianglePlot:
 
                 # *** NEW: Plot the delta_chi2 threshold line ***
                 # (This only happens if a threshold is provided and the toggle is True.)
-                self.delta_chi2_threshold = getattr(
-                    self.param_connect, "delta_chi2_threshold", None
-                )
-                if self.delta_chi2_threshold is not None and self.plot_threshold_line:
+
+                if isinstance(self.delta_chi2_threshold, list):
+                    if self.iterations_to_plot != "all":
+                        iter = max(self.iterations_to_plot)
+                    else:
+                        iter = last_complete_it
+                    if iter < len(self.delta_chi2_threshold):
+                        delta_chi2_threshold = self.delta_chi2_threshold[iter]
+                    else:
+                        delta_chi2_threshold = self.delta_chi2_threshold[-1]
+                elif isinstance(self.delta_chi2_threshold, (int, float)):
+                    delta_chi2_threshold = self.delta_chi2_threshold
+
+                if delta_chi2_threshold is not None and self.plot_threshold_line:
                     ax_ij.contour(
                         Xi,
                         Yi,
                         Zi,
-                        levels=[self.delta_chi2_threshold],
+                        levels=[delta_chi2_threshold],
                         colors=self.delta_chi2_threshold_color,
                         linewidths=self.delta_chi2_threshold_linewidth,
                         linestyles="-",
                         zorder=10000,
                     )
                     # Add a legend for the threshold line
-                # Create a custom legend handle (a Line2D) that looks like the threshold line
-                threshold_handle = Line2D(
-                    [0],
-                    [0],
-                    color=self.delta_chi2_threshold_color,
-                    lw=self.delta_chi2_threshold_linewidth,
-                    linestyle="-",
-                )
-                # Use this handle for the legend; note that you can format the label as desired.
-                label = (
-                    r"$\Delta \chi^2{\rm -threshold} = %s$" % self.delta_chi2_threshold
-                )
-                ax_ij.legend(
-                    [threshold_handle],
-                    [label],
-                    loc="upper left",
-                    fontsize=7,
-                    frameon=False,
-                )
+                    # Create a custom legend handle (a Line2D) that looks like the threshold line
+                    # threshold_handle = Line2D(
+                    #     [0],
+                    #     [0],
+                    #     color=self.delta_chi2_threshold_color,
+                    #     lw=self.delta_chi2_threshold_linewidth,
+                    #     linestyle="-",
+                    # )
+                    # # Use this handle for the legend; note that you can format the label as desired.
+                    # label = r"$\Delta \chi^2{\rm -thres} = %s$" % delta_chi2_threshold
+                    # ax_ij.legend(
+                    #     [threshold_handle],
+                    #     [label],
+                    #     loc="upper left",
+                    #     fontsize=7,
+                    #     frameon=False,
+                    # )
 
         # Step G) Create a single colorbar if we have at least one contour
         if self.first_contour_set is not None:
 
-            cbar_ax = fig.add_axes(
-                [
-                    1 - num_vars / 100,
-                    num_vars / 100 + 0.02,
-                    0.02,
-                    (2 * num_vars - 3) / (2 * num_vars) * 0.9,
-                ]
-            )  # [left, bottom, width, height]
+            if plot_mode == "triangle":
+                # cbar_ax = fig.add_axes(
+                #     [
+                #         1 - n_rows / 100,
+                #         n_rows / 100 + 0.02,
+                #         0.02,
+                #         (2 * n_rows - 3) / (2 * n_rows) * 0.9,
+                #     ]
+                # )  # [left, bottom, width, height]
+
+                pad = 0.01  # small gap in figure‐fraction units
+                bar_width = 0.02  # 2% of figure width
+
+                # bottom‐right Axes in your PairGrid
+                br_ax = pp.axes[-1, -1]
+                bb = br_ax.get_position()  # Bbox(x0,y0,x1,y1)
+
+                # get the vertical span of the *entire* grid:
+                bottom_y = min(ax.get_position().y1 for ax in pp.axes[-1, :] if ax)
+                top_y = max(ax.get_position().y1 for ax in pp.axes[0, :] if ax)
+
+                # now build the cbar axes so that its right edge is at bb.x1 - pad
+                left = bb.x1 - pad - bar_width
+                bottom = bottom_y + pad
+                height = (top_y - bottom_y) - 2 * pad
+
+                cbar_ax = fig.add_axes([left, bottom, bar_width, height])
+
+            elif plot_mode == "matrix":
+                # full-height bar on the right of the grid
+                pad = 0.01  # gap between grid and colorbar
+                bar_width = 0.02  # 2% of figure width
+                left = fig.subplotpars.right + pad  # right edge of subplots + pad
+                bottom = fig.subplotpars.bottom
+                height = fig.subplotpars.top - bottom
+
+                cbar_ax = fig.add_axes([left, bottom, bar_width, height])
+
             cbar = fig.colorbar(
                 self.first_contour_set,
                 cax=cbar_ax,
@@ -11057,6 +13927,52 @@ class TrianglePlot:
                 format=FuncFormatter(self.custom_tick_formatter),
                 spacing="uniform",
             )
+
+            # ————— add this block —————
+            # only if we have exactly one threshold value:
+            if self.plot_threshold_line:
+                th = delta_chi2_threshold
+
+                # draw a horizontal line at y=th in data‐coords
+                cbar.ax.hlines(
+                    th,
+                    xmin=0,
+                    xmax=1,  # full width of the colorbar
+                    color=self.delta_chi2_threshold_color,
+                    linewidth=self.delta_chi2_threshold_linewidth,
+                    linestyle="-",
+                    label=f"$\Delta\chi^2={th}$",
+                    zorder=11,
+                    clip_on=False,
+                )
+                # and drop a little text next to it:
+                # now place the text so its RIGHT edge sits at x=0 (the left side of the bar)
+                if plot_mode == "triangle":
+                    cbar.ax.text(
+                        -0.15,  # 0.0 is the very left edge; -0.01 pushes it 1% further left
+                        th,
+                        rf"thres={th}",
+                        va="center",
+                        ha="right",  # right‐align the text to that x‐pos
+                        transform=cbar.ax.get_yaxis_transform(),
+                        fontsize=7,
+                        zorder=11,
+                        clip_on=False,
+                    )
+                else:
+                    # cbar.ax.text(
+                    #     3.5,  # 3.0 is the very right edge; 3.01 pushes it 1% further right
+                    #     th,
+                    #     rf"$\Delta\chi^2={th}$",
+                    #     va="center",
+                    #     ha="left",  # left-align the text to that x-position
+                    #     transform=cbar.ax.get_yaxis_transform(),
+                    #     fontsize=7,
+                    #     zorder=11,
+                    #     clip_on=False,
+                    # )
+                    # skip - do nothing:
+                    pass
 
             cbar.set_ticks(data_boundaries)
             cbar.ax.yaxis.set_major_formatter(FuncFormatter(self.custom_tick_formatter))
@@ -11123,13 +14039,9 @@ class TrianglePlot:
 
         if self.save_params_loglkls:
             os.makedirs(self.output_folder, exist_ok=True)
-            os.makedirs(
-                os.path.join(self.output_folder, "triangle_plots"), exist_ok=True
-            )
+            os.makedirs(os.path.join(self.output_folder, "pairplots"), exist_ok=True)
             pickle_filename = f"triangle_plot_contour_data.pickle"
-            save_path = os.path.join(
-                self.output_folder, "triangle_plots", pickle_filename
-            )
+            save_path = os.path.join(self.output_folder, "pairplots", pickle_filename)
 
             with open(save_path, "wb") as f:
                 pickle.dump(self.big_df, f)
@@ -11255,12 +14167,14 @@ class TrianglePlot:
             n_iter = len(self.iterations)
             if n_iter == 0:
                 return artists
+            n_cols = n_iter + 1  # +1 for the extra "line-style" label
 
-            dx = (width / (n_iter + 1)) * self.spacing
+            dx = (width / n_cols) * self.spacing
             center_y = (height / 2) - ydescent
 
-            for i, it_number in enumerate(self.iterations, start=1):
-                x = xdescent + i * dx
+            # --- Now: loop over actual iterations, not over col ---
+            for idx, it_number in enumerate(self.iterations):
+                x = xdescent + idx * dx + dx / 2
                 label_str = f"i={it_number}"
                 text = mtext.Text(
                     x,
@@ -11272,46 +14186,137 @@ class TrianglePlot:
                     transform=trans,
                 )
                 artists.append(text)
+
+            # Add the extra "line-style" label at the last column
+            x = xdescent + (n_cols - 1) * dx + dx / 2
+            text = mtext.Text(
+                x,
+                center_y,
+                " Style",
+                ha="center",
+                va="center",
+                fontsize=fontsize,
+                transform=trans,
+            )
+            artists.append(text)
+
             return artists
+
+        # def get_xwidth(self, renderer):
+        #     """
+        #     Return the actual total width (in points) that this custom handle occupies.
+        #     Uses Matplotlib's renderer to compute precise text width instead of assuming proportions.
+
+        #     Parameters
+        #     ----------
+        #     renderer : RendererBase
+        #         The Matplotlib renderer used to compute the text width.
+
+        #     Returns
+        #     -------
+        #     float
+        #         The total width of the iteration labels in points.
+        #     """
+        #     from matplotlib.font_manager import FontProperties  # Ensure import is here
+
+        #     n = len(self.iterations)
+        #     if n == 0 or self.fontsize is None:
+        #         return 0
+        #     n_cols = n + 1  # +1 for the extra "line-style" label
+
+        #     # Define font properties based on legend font size
+        #     font_properties = FontProperties(size=self.fontsize)
+
+        #     # Measure the total width of all labels
+        #     total_width = 0.0
+        #     for it_number in self.iterations:
+        #         label_str = f"i={it_number}"
+        #         text_width, _, _ = renderer.get_text_width_height_descent(
+        #             label_str, font_properties, ismath=False
+        #         )
+        #         total_width += text_width
+
+        #     # Account for spacing between labels (spacing factor may need adjustment)
+        #     spacing = 0.3 * self.fontsize  # Adjust if necessary
+        #     total_width += (n - 1) * spacing  # Add spacing between iteration labels
+
+        #     # --- add width of the extra 'line-style' label ------------------------  ← NEW
+        #     extra_str = "line-style"
+        #     text_width_extra, _, _ = renderer.get_text_width_height_descent(
+        #         extra_str, font_properties, ismath=False
+        #     )
+        #     total_width += spacing + text_width_extra
+
+        #     return total_width
 
         def get_xwidth(self, renderer):
             """
-            Return the actual total width (in points) that this custom handle occupies.
-            Uses Matplotlib's renderer to compute precise text width instead of assuming proportions.
-
-            Parameters
-            ----------
-            renderer : RendererBase
-                The Matplotlib renderer used to compute the text width.
-
-            Returns
-            -------
-            float
-                The total width of the iteration labels in points.
+            Compute the minimal width (in points) so that, when
+            create_artists uses dx = (width/n_cols)*spacing, no text
+            will spill outside [0, width]. Returns that width.
             """
-            from matplotlib.font_manager import FontProperties  # Ensure import is here
+            from matplotlib.font_manager import FontProperties
 
             n = len(self.iterations)
             if n == 0 or self.fontsize is None:
-                return 0
+                return 0.0
 
-            # Define font properties based on legend font size
-            font_properties = FontProperties(size=self.fontsize)
+            # total columns = one column per iteration + one for "Style"
+            n_cols = n + 1
 
-            # Measure the total width of all labels
-            total_width = 0.0
-            for it_number in self.iterations:
-                label_str = f"i={it_number}"
-                text_width, _, _ = renderer.get_text_width_height_descent(
-                    label_str, font_properties, ismath=False
+            # how many points is one "em"?
+            em_pts = self.fontsize
+
+            # measure all "i=k" labels:
+            fontp = FontProperties(size=self.fontsize)
+            w_iter = []
+            for k in self.iterations:
+                txt = f"i={k}"
+                w, _, _ = renderer.get_text_width_height_descent(
+                    txt, fontp, ismath=False
                 )
-                total_width += text_width
+                w_iter.append(w)
 
-            # Account for spacing between labels (spacing factor may need adjustment)
-            spacing = 0.3 * self.fontsize  # Adjust if necessary
-            total_width += (n - 1) * spacing  # Add spacing between iteration labels
+            # measure the "Style" label:
+            w_style, _, _ = renderer.get_text_width_height_descent(
+                "Style", fontp, ismath=False
+            )
 
-            return total_width
+            # spacing in points
+            spacing_pts = self.spacing * em_pts
+
+            # 1) Ensure the **first** iteration label doesn't run off the left:
+            #    0.5 * dx >= w_iter[0]/2  ⇒  dx >= max(w_iter)
+            #    dx = spacing_pts * (W / n_cols) / em_pts  [but since spacing is em-based,
+            #          dx = (W/n_cols)*spacing  directly]
+            #    => W >= n_cols * max(w_iter) / spacing
+            W1 = 0.0
+            if w_iter:
+                W1 = n_cols * max(w_iter) / self.spacing
+
+            # 2) Ensure the **Style** label doesn't run off the right:
+            #    center_style + w_style/2 <= W
+            #    center_style = (n + 0.5)*dx
+            #    dx = (W/n_cols)*spacing
+            #    ⇒ W*(1 - spacing*(n+0.5)/n_cols) >= w_style/2
+            denom = 1.0 - self.spacing * (n + 0.5) / n_cols
+            if denom <= 0:
+                raise ValueError(
+                    f"spacing={self.spacing:.2f} is too large for {n} iterations."
+                )
+            W2 = (w_style / 2.0) / denom
+
+            # Finally, the minimal width that satisfies both:
+            return max(W1, W2)
+
+        def get_width(self, legend, renderer):
+            """
+            Return the exact width (in points) that the iteration-label row needs.
+            We already computed that in `get_xwidth`, so just reuse it here.
+            Matplotlib will then multiply this by `handlelength` (which we will
+            keep at the default value 1.0).
+            """
+            return self.get_xwidth(renderer)
 
     class MultiColorHandler(HandlerBase):
         """
@@ -11324,7 +14329,15 @@ class TrianglePlot:
         so that columns align properly across rows.
         """
 
-        def __init__(self, colors, marker="o", markersize=8, spacing=1.0):
+        def __init__(
+            self,
+            colors,
+            marker="o",
+            markersize=8,
+            spacing=1.0,
+            line_style=None,
+            line_color="black",
+        ):
             """
             Parameters
             ----------
@@ -11337,12 +14350,18 @@ class TrianglePlot:
                 Size of the marker in points.
             spacing : float
                 Horizontal spacing factor (bigger => more gap).
+            line_style : str, optional
+                Style of the line (e.g. '-', '--', '-.', etc.). Default is None.
+            line_color : str, optional
+                Color of the line. Default is "black".
             """
             super().__init__()
             self.colors = colors
             self.marker = marker
             self.markersize = markersize
             self.spacing = spacing
+            self.line_style = line_style
+            self.line_color = line_color
 
         def create_artists(
             self,
@@ -11359,12 +14378,13 @@ class TrianglePlot:
             n = len(self.colors)
             if n == 0:
                 return artists
+            n_cols = n + (1 if self.line_style else 0)
 
-            dx = (width / (n + 1)) * self.spacing
+            dx = (width / n_cols) * self.spacing
             center_y = (height / 2) - ydescent
 
-            for i, c in enumerate(self.colors, start=1):
-                x = xdescent + i * dx
+            for i, c in enumerate(self.colors):
+                x = xdescent + i * dx + dx / 2
                 artist = mlines.Line2D(
                     [x],
                     [center_y],
@@ -11377,6 +14397,22 @@ class TrianglePlot:
                     transform=trans,
                 )
                 artists.append(artist)
+
+            # -- optional line column (the new “extra column”) --
+            if self.line_style is not None:
+                x = xdescent + (n_cols - 1) * dx + dx / 2
+                half_len = self.markersize * 0.9
+                artists.append(
+                    mlines.Line2D(
+                        [x - half_len, x + half_len],
+                        [center_y, center_y],
+                        linestyle=self.line_style,
+                        color=self.line_color,
+                        linewidth=1.5,
+                        transform=trans,
+                    )
+                )
+
             return artists
 
         def get_xwidth(self, legend):
@@ -11387,16 +14423,15 @@ class TrianglePlot:
             Calculated based on the number of markers and spacing.
             """
             n = len(self.colors)
+            n_cols = n + (1 if self.line_style else 0)
             # Define how much 'em' each marker and spacing consumes
             # Adjust these values based on your specific needs
             per_marker_em = 0.6  # Approximate width per marker
             per_spacing_em = 0.3  # Approximate width per spacing
 
-            if n <= 1:
-                return per_marker_em
-            else:
-                # Total width = n * per_marker_em + (n-1) * per_spacing_em
-                return per_marker_em * n + per_spacing_em * (n - 1)
+            extra_line_em = 0.8 if self.line_style else 0.0  # NEW
+
+            return per_marker_em * n + per_spacing_em * (n_cols - 1)
 
         def get_width(self, legend, renderer):
             """
@@ -11408,16 +14443,16 @@ class TrianglePlot:
             if n == 0:
                 return 0
 
+            n_cols = n + (1 if self.line_style else 0)
+
             # Let's say each marker is about `markersize` points wide,
             # plus we add some fraction for the spacing:
             # This is just an approximation to ensure there's enough space.
             per_marker_pts = self.markersize * 1.0
-            per_spacing_pts = self.markersize * 0.5
+            per_spacing_pts = self.markersize * self.spacing
+            extra_line_pts = self.markersize * 1.2 if self.line_style else 0.0
 
-            if n < 2:
-                return per_marker_pts
-            else:
-                return n * per_marker_pts + (n - 1) * per_spacing_pts
+            return n_cols * per_marker_pts + (n_cols - 1) * per_spacing_pts
 
 
 # ---------- Helper classes ----------------------
